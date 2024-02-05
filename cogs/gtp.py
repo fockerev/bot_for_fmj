@@ -1,4 +1,3 @@
-import os
 import pprint
 import re
 
@@ -64,7 +63,7 @@ class BotCog(commands.Cog):
         pprint.pprint(self.__messages,width=100)
         try:
             # ChatGPT APIを呼び出して返答を取得
-            response = openai.chat.completions.create(model="gpt-4-0125-preview", messages=self.__messages, n=3)
+            response = openai.chat.completions.create(model="gpt-3.5-turbo", messages=self.__messages, n=3)
             if len(str(response.choices[0].message.content)) > 0:
                 print(response.usage)
                 return str(response.choices[0].message.content)
@@ -84,12 +83,10 @@ class BotCog(commands.Cog):
     async def on_ready(self):
         self.loop_reset.start()
         print("loop start")
-        self.guild_id = os.getenv("GUILD_ID")
-        print(self.bot.tree.get_commands())
-        id = os.getenv("GUILD_ID")
-        await self.bot.tree.sync(guild=discord.Object(id))
-        print("sync")
 
+    @commands.hybrid_command(name="ping", brief="ping")
+    async def ping(self, ctx):
+        await ctx.send("pong")
 
     @commands.hybrid_command(name="reset_h", brief="会話履歴をリセットする. 60分ごとに自動実行")
     async def reset_h(self, ctx):

@@ -1,6 +1,3 @@
-
-
-
 import asyncio
 import os
 
@@ -11,20 +8,28 @@ from discord.ext import commands
 dotenv.load_dotenv(verbose=True)
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-GUILD_ID = os.getenv("GUILD_ID")
-PREFIX= os.getenv("BOT_PREFIX")
+GUILD_ID_LIST = [id.strip() for id in os.getenv("GUILD_ID").split(',')]
+PREFIX = os.getenv("BOT_PREFIX")
+
+print(GUILD_ID_LIST)
 
 class DiscordBot(commands.Bot):
     """DiscordのBotを設定するクラス"""
     def __init__(self, intents: discord.Intents, command_prefix: str, help_command=None):
         super().__init__(intents=intents, command_prefix=command_prefix, help_command=help_command)
 
+    async def sync_all_server(self):
+        """コマンドの同期処理"""
+        for id in GUILD_ID_LIST:
+            self.tree.copy_global_to(guild=discord.Object(id=id))
+            await self.tree.sync(guild=discord.Object(id=id))
+        print("sync")
+
     async def setup_hook(self):
         """Setup時に実行する処理"""
 
         # Botコマンドの動機
-        self.tree.copy_global_to(guild=discord.Object(id=GUILD_ID))
-        await self.tree.sync(guild=discord.Object(id=GUILD_ID))
+        await self.sync_all_server()
         return await super().setup_hook()
 
 # Botインスタンス生成
