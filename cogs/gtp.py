@@ -11,6 +11,7 @@ class BotCog(commands.Cog):
         self.bot = bot
         self.__gtp_content = "Briefly reply unless otherwise mentioned. speaking Kansai dialect"
         self.__messages = [{ "role": "system", "content": self.__gtp_content}]
+        self.__history_size = 6
 
 
     async def reset_history(self) -> None:
@@ -76,7 +77,7 @@ class BotCog(commands.Cog):
         return int(len(self.__messages))
 
     async def delete_old_history(self):
-        while 6 < self.check_history_size() :
+        while self.__history_size < self.check_history_size() :
             del self.__messages[1]
 
     @commands.Cog.listener()
@@ -87,6 +88,7 @@ class BotCog(commands.Cog):
     @commands.hybrid_command(name="ping", brief="ping")
     async def ping(self, ctx):
         await ctx.send("pong")
+
 
     @commands.hybrid_command(name="reset_h", brief="会話履歴をリセットする. 60分ごとに自動実行")
     async def reset_h(self, ctx):
