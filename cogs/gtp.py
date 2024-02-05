@@ -58,6 +58,9 @@ class BotCog(commands.Cog):
             self.__messages.append({"role": "assistant", "content": reference_message})
 
         self.__messages.append({"role": "user", "content": question})
+
+        await self.delete_old_history()
+
         pprint.pprint(self.__messages,width=100)
         try:
             # ChatGPT APIを呼び出して返答を取得
@@ -70,6 +73,12 @@ class BotCog(commands.Cog):
         except openai.APIError as e:
             return f"APIでエラーが発生しました: {e}"
 
+    def check_history_size(self):
+        return int(len(self.__messages))
+
+    async def delete_old_history(self):
+        while 6 < self.check_history_size() :
+            del self.__messages[1]
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -153,13 +162,13 @@ class BotCog(commands.Cog):
             if message.reference is not None:
                 if message.reference.resolved is not None:
                     reference_message = message.reference.resolved.content
-
-            print(reference_message)
+            print("")
+            print(f"reference\t{reference_message}")
 
             # メンションを除いたテキストを生成
             plane_message = re.sub(r'<@\d+>', "", message.content)
             plane_message = plane_message.strip()
-            print(plane_message)
+            print(f"input\t\t{plane_message}")
 
             # GTPへ投げる
             response = await self.ask_chatgpt(plane_message, reference_message)
