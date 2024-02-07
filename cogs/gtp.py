@@ -64,7 +64,7 @@ class BotCog(commands.Cog):
         pprint.pprint(self.__messages,width=100)
         try:
             # ChatGPT APIを呼び出して返答を取得
-            response = openai.chat.completions.create(model="gpt-3.5-turbo", messages=self.__messages, n=3)
+            response = openai.chat.completions.create(model="gpt-4-0125-preview", messages=self.__messages, n=1)
             if len(str(response.choices[0].message.content)) > 0:
                 print(response.usage)
                 return str(response.choices[0].message.content)
