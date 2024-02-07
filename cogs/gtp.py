@@ -9,9 +9,12 @@ from discord.ext import commands, tasks
 class BotCog(commands.Cog):
     def __init__(self, bot) -> None:
         self.bot = bot
+        self.__model = "gpt-4-0125-preview"
         self.__gtp_content = "Briefly reply unless otherwise mentioned. speaking Kansai dialect"
         self.__messages = [{ "role": "system", "content": self.__gtp_content}]
         self.__history_size = 6
+        self.__max_token = 600
+        self.__temperature = 0.7
 
 
     async def reset_history(self) -> None:
@@ -64,7 +67,11 @@ class BotCog(commands.Cog):
         pprint.pprint(self.__messages,width=100)
         try:
             # ChatGPT APIを呼び出して返答を取得
-            response = openai.chat.completions.create(model="gpt-4-0125-preview", messages=self.__messages, n=1)
+            response = openai.chat.completions.create(model = self.__model,
+                                                      messages = self.__messages,
+                                                      max_tokens = self.__max_token,
+                                                      temperature = self.__temperature)
+
             if len(str(response.choices[0].message.content)) > 0:
                 print(response.usage)
                 return str(response.choices[0].message.content)
