@@ -68,6 +68,10 @@ class BotCog(commands.Cog):
             author (_type_): メッセージ送信者
             response (ChatCompletion): OpenAI APIからの応答
         """
+
+        if isinstance(self.__token_ranking, dict) is False :
+            self.__token_ranking = {}
+
         if author.id in self.__token_ranking.keys():
             self.__token_ranking[author.id] += response.usage.completion_tokens
         else:
@@ -145,9 +149,9 @@ class BotCog(commands.Cog):
             await ctx.send("まだ誰もAPIを使用していません")
             return
 
-        self.__token_ranking = sorted(self.__token_ranking.items(), key = lambda x : x[1], reverse= True)
+        ranking_sorted = sorted(self.__token_ranking.items(), key = lambda x : x[1], reverse= True)
         embed = discord.Embed(title="Token使用量ランキング", color=discord.Colour.red())
-        for x, dict in enumerate(self.__token_ranking):
+        for x, dict in enumerate(ranking_sorted):
             if 3 < x :
                 break
 
