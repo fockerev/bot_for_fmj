@@ -5,22 +5,25 @@ import discord
 import openai
 from discord.ext import commands, tasks
 
+OPENAI_API_DICT={
+    "gtp4turbo" :"gpt-4-turbo",
+    "gtp4o": "gpt-4o"
+}
 
 class BotCog(commands.Cog):
     def __init__(self, bot) -> None:
         self.bot = bot
-        self.__model = "gpt-4-0125-preview"
+        self.__model = OPENAI_API_DICT["gtp4o"]
         self.__gtp_content = "Briefly reply unless otherwise mentioned. speaking Kansai dialect"
         self.__messages = [{ "role": "system", "content": self.__gtp_content}]
-        self.__history_size = 6
-        self.__max_token = 600
-        self.__temperature = 1    # 0 ~ 2 default:1
+        self.__history_size = 10    # 会話履歴保存数
+        self.__max_token = 800      # 最大Token数
+        self.__temperature = 1      # 0 ~ 2 default:1
         self.__token_ranking = {}
 
 
     async def reset_history(self) -> None:
-        """履歴削除
-        """
+        """履歴削除"""
         # print(len(messages))
         if len(self.__messages) > 2:
             del self.__messages[1:]
