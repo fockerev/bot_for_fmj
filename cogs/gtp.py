@@ -1,8 +1,10 @@
+import copy
 import pprint
 import re
 
 import discord
 import openai
+import urlextract
 from discord.ext import commands, tasks
 
 OPENAI_API_DICT={
@@ -16,10 +18,11 @@ class BotCog(commands.Cog):
         self.__model = OPENAI_API_DICT["gtp4o"]
         self.__gtp_content = "Briefly reply unless otherwise mentioned. speaking Kansai dialect"
         self.__messages = [{ "role": "system", "content": self.__gtp_content}]
-        self.__history_size = 10    # 会話履歴保存数
+        self.__history_size = 8    # 会話履歴保存数
         self.__max_token = 800      # 最大Token数
         self.__temperature = 1      # 0 ~ 2 default:1
         self.__token_ranking = {}
+        self.__urlextrator = urlextract.URLExtract()
 
 
     async def reset_history(self) -> None:
@@ -81,10 +84,11 @@ class BotCog(commands.Cog):
             self.__token_ranking.setdefault(author.id, response.usage.completion_tokens)
 
 
-    async def ask_chatgpt(self, author, question:str, reference_message:str = "") -> str:
+    async def ask_chatgpt(self, author, question:str, reference_message:str = "", attachments:str = None) -> str:
         """_summary_
 
         Args:
+            author 
             question (str): ユーザ側の発言
             reference_message (str): 同時に入力したい発言
 
@@ -95,15 +99,43 @@ class BotCog(commands.Cog):
         if reference_message != "":
             self.__messages.append({"role": "assistant", "content": reference_message})
 
-        self.__messages.append({"role": "user", "content": question})
-
         await self.delete_old_history()
 
-        pprint.pprint(self.__messages,width=100)
+        # 添付ファイルの抽出
+        # 画像が添付されている場合それも入力する
+        attachments_list = []
+        # 直接メッセージに添付
+        if 0 < len(attachments):
+            for attach in attachments:
+                if re.search(r"(.png|.jpg)",attach.url) is not None:
+                    attachments_list.append(attach.url)
+        # URLで添付
+        extracted_urls = self.__urlextrator.find_urls(question)
+        if len(extracted_urls) > 0:
+            for url in extracted_urls:
+                if re.search(r"(.png|.jpg)",url) is not None:
+                    attachments_list.append(url)
+                    question = question.replace(url,"")
+
+        print(attachments_list)
+
+        self.__messages.append({"role": "user", "content": question})
+
+        # 画像は連続で入力すると爆発するので専用のメッセージデータを作成
+        include_image_content = copy.deepcopy(self.__messages)
+        if len(attachments_list) > 0:
+            image_input = []
+            for url in attachments_list:
+                image_input.append({"type": "image_url", "image_url": {"url": url, "detail":"low"}})
+
+            include_image_content.append({"role": "user", "content":image_input})
+
+        pprint.pprint(include_image_content, width=100)
+
         try:
             # ChatGPT APIを呼び出して返答を取得
             response = openai.chat.completions.create(model = self.__model,
-                                                      messages = self.__messages,
+                                                      messages = include_image_content,
                                                       max_tokens = self.__max_token,
                                                       temperature = self.__temperature)
 
@@ -113,9 +145,11 @@ class BotCog(commands.Cog):
                 print(response.usage)
                 return str(response.choices[0].message.content)
             else:
-                return "APIからの無効な応答です。"
+                return "変な応答帰ってきましたよ"
         except openai.APIError as e:
-            return f"APIでエラーが発生しました: {e}"
+            return f"無理ンゴォオオオオオオオオオオ: {e.message}"
+        except Exception as e:
+            return f"なんかエラー出て無理ンゴォオオオオオオオ {e}"
 
     # 立ち上げ完了時実行
     @commands.Cog.listener()
@@ -227,7 +261,7 @@ class BotCog(commands.Cog):
             print(f"input\t\t{plane_message}")
 
             # GTPへ投げる
-            response = await self.ask_chatgpt(message.author, plane_message, reference_message)
+            response = await self.ask_chatgpt(message.author, plane_message, reference_message, message.attachments)
             # チャットに出力
             await message.channel.send(response)
 
