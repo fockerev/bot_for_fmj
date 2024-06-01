@@ -4,3 +4,4 @@ numpy==1.26.3
 openai==1.10.0
 pandas==2.2.0
 python-dotenv==1.0.1
+urlextract
