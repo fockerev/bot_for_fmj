@@ -79,19 +79,19 @@ class BotCog(commands.Cog):
             self.__token_ranking = {}
 
         if author.id in self.__token_ranking.keys():
-            self.__token_ranking[author.id] += response.usage.completion_tokens
+            self.__token_ranking[author.id] += response.usage.total_tokens
         else:
-            self.__token_ranking.setdefault(author.id, response.usage.completion_tokens)
+            self.__token_ranking.setdefault(author.id, response.usage.total_tokens)
 
 
     async def ask_chatgpt(self, author, question:str, reference_message:str = "", attachments:str = None) -> str:
         """_summary_
 
         Args:
-            author 
+            author: 発言者
             question (str): ユーザ側の発言
             reference_message (str): 同時に入力したい発言
-
+            attachments : 添付ファイル
         Returns:
             str: apiからの応答
         """
@@ -104,18 +104,25 @@ class BotCog(commands.Cog):
         # 添付ファイルの抽出
         # 画像が添付されている場合それも入力する
         attachments_list = []
+        # 対応ファイル形式
+        extention = re.compile(r'.png|.jpg|.gif')
         # 直接メッセージに添付
         if 0 < len(attachments):
             for attach in attachments:
-                if re.search(r"(.png|.jpg)",attach.url) is not None:
+                if extention.search(attach.url) is not None:
                     attachments_list.append(attach.url)
+                else:
+                    return "非対応やで"
         # URLで添付
         extracted_urls = self.__urlextrator.find_urls(question)
         if len(extracted_urls) > 0:
             for url in extracted_urls:
-                if re.search(r"(.png|.jpg)",url) is not None:
+                if extention.search(url) is not None:
                     attachments_list.append(url)
                     question = question.replace(url,"")
+                else:
+                    return "それ非対応や"
+
 
         print(attachments_list)
 
