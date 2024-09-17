@@ -30,7 +30,7 @@ class BotCog(commands.Cog):
         self.__token_ranking: dict = {}
         self.__urlextrator = urlextract.URLExtract()
         self.__logger = getLogger("gtp")
-        self.__save_response = False
+        self.__save_response = True
 
     async def reset_history(self, guild_id: int) -> bool:
         """履歴削除"""
