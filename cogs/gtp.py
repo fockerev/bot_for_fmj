@@ -1,15 +1,50 @@
 import copy
+import inspect
 import json
+import logging
+import logging.config
 import re
-from logging import config, getLogger
+from dataclasses import dataclass
 from pathlib import Path
 
 import discord
 import openai
 import urlextract
+import yaml
 from discord.ext import commands, tasks
 
-OPENAI_API_DICT = {"gtp4turbo": "gpt-4-turbo", "gtp4o": "gpt-4o"}
+VERSION = "20240918_0100"
+
+
+@dataclass
+class YamlConfig:
+    @classmethod
+    def load(cls, config_path: Path):
+        def _convert_from_dict(parent_cls, data):
+            for key, val in data.items():
+                child_class = parent_cls.__dataclass_fields__[key].type
+                if inspect.isclass(child_class) and issubclass(child_class, YamlConfig):
+                    data[key] = child_class(**_convert_from_dict(child_class, val))
+            return data
+
+        if config_path.exists() is False:
+            raise FileNotFoundError(f"{str(config_path)} is not found")
+
+        with open(config_path) as f:
+            config_data = yaml.safe_load(f)
+            config_data = _convert_from_dict(cls, config_data)
+            return cls(**config_data)
+
+
+@dataclass
+class gtpConfig(YamlConfig):
+    model: str
+    max_token: int
+    temperature: float
+    top_p: float
+    save_api_response: bool
+    history_size: int
+    default_system_promt: str
 
 
 class BotCog(commands.Cog):
@@ -17,20 +52,15 @@ class BotCog(commands.Cog):
         # define logger
         with open(str((Path(__file__).resolve().parent / ".." / "logging_config.json").resolve()), "r") as f:
             log_conf = json.load(f)
-        config.dictConfig(log_conf)
+        logging.config.dictConfig(log_conf)
+        self.__logger = logging.getLogger("gtp")
 
         self.bot = bot
-        self.__model = OPENAI_API_DICT["gtp4o"]
-        self.__default_charactor: str = "Briefly reply unless otherwise mentioned. speaking Kansai dialect"
-        self.__init_message: list = [{"role": "system", "content": self.__default_charactor}]
+        self.config = gtpConfig.load((Path(__file__).resolve().parent / ".." / "setting.yaml").resolve())
+
+        self.__init_message: list = [{"role": "system", "content": self.config.default_system_promt}]
         self.__history: dict = {}
-        self.__history_size: int = 8  # 会話履歴保存数
-        self.__max_token: float = 800  # 最大Token数
-        self.__temperature: float = 1  # 0 ~ 2 default:1
         self.__token_ranking: dict = {}
-        self.__urlextrator = urlextract.URLExtract()
-        self.__logger = getLogger("gtp")
-        self.__save_response = True
 
     async def reset_history(self, guild_id: int) -> bool:
         """履歴削除"""
@@ -73,7 +103,7 @@ class BotCog(commands.Cog):
 
     async def delete_old_history(self, guild_id: int) -> None:
         """一番古い履歴(index = 1) を削除する"""
-        while self.__history_size < self.check_history_size(guild_id):
+        while self.config.history_size < self.check_history_size(guild_id):
             del self.__history[guild_id][1]
 
     async def parse_message(self, message: discord.message.Message) -> tuple[str, str | None, list]:
@@ -99,7 +129,8 @@ class BotCog(commands.Cog):
                     raise ValueError("そのファイル非対応やで")
 
         # チャットから画像のURLを抽出
-        extracted_urls = self.__urlextrator.find_urls(plane_message)
+        extractor = urlextract.URLExtract()
+        extracted_urls = extractor.find_urls(plane_message)
         if len(extracted_urls) > 0:
             for url in extracted_urls:
                 if extention.search(url) is not None:
@@ -128,11 +159,14 @@ class BotCog(commands.Cog):
             image_content = [{"role": "user", "content": image_input}]
             # Token使用料削減のため画像は履歴として保持しない
             input_messages += image_content
+
         # APIに送る
-        response = openai.chat.completions.create(model=self.__model, messages=input_messages, max_tokens=self.__max_token, temperature=self.__temperature)
+        response = openai.chat.completions.create(
+            model=self.config.model, messages=input_messages, max_tokens=self.config.max_token, temperature=self.config.temperature, top_p=self.config.top_p
+        )
         self.__logger.info(f"[Response] {str(response.choices[0].message.content)}")
 
-        if self.__save_response is True:
+        if self.config.save_api_response is True:
             self.__history[guild_id].append({"role": "assistant", "content": str(response.choices[0].message.content)})
 
         return str(response.choices[0].message.content), response.usage.total_tokens
@@ -194,6 +228,33 @@ class BotCog(commands.Cog):
 
         await ctx.send(embed=embed)
 
+    @commands.hybrid_command(name="check_config", brief="現在の設定を出力")
+    async def check_setting(self, ctx):
+        embed = discord.Embed(title="Bot Config", color=0xFF0000)
+        embed.set_author(name=self.bot.user, url="https://github.com/fockerev/bot_for_fmj")
+        embed.add_field(name="BOT VERSION", value=VERSION, inline=False)
+        embed.add_field(name="Model", value=self.config.model, inline=True)
+        embed.add_field(name="Temperature", value=self.config.temperature, inline=True)
+        embed.add_field(name="Top_p", value=self.config.top_p, inline=True)
+        embed.add_field(name="Max token", value=self.config.max_token, inline=True)
+        embed.add_field(name="Max history size", value=self.config.history_size, inline=True)
+        embed.add_field(name="Save api response", value=self.config.save_api_response, inline=True)
+        if ctx.guild.id in self.__history.keys():
+            embed.add_field(name="System prompt", value=self.__history[ctx.guild.id][0]["content"], inline=False)
+
+        embed.set_footer(text="made by fockerev")
+        await ctx.send(embed=embed)
+
+    @commands.hybrid_command(name="check_history", brief="対話履歴を出力")
+    async def check_history(self, ctx):
+        if ctx.guild.id in self.__history.keys() and len(self.__history[ctx.guild.id]) > 0:
+            embed = discord.Embed(title="History", color=0x00FF4C)
+            for idx, hist in enumerate(self.__history[ctx.guild.id]):
+                embed.add_field(name=f"{idx}\t{hist["role"]}", value=f"{hist["content"]}", inline=False)
+            await ctx.send(embed=embed)
+        else:
+            await ctx.send("対話履歴がありません")
+
     @commands.hybrid_command(name="help", brief="help")
     async def help(self, ctx, args=None):
         help_embed = discord.Embed()
@@ -201,7 +262,9 @@ class BotCog(commands.Cog):
 
         # If there are no arguments, just list the commands:
         if not args:
-            help_embed.add_field(name="List of supported commands:", value="\n".join([str(i + 1) + ". " + x.name for i, x in enumerate(self.bot.commands)]), inline=False)
+            help_embed.add_field(
+                name="List of supported commands:", value="\n".join([str(i + 1) + ". " + x.name for i, x in enumerate(self.bot.commands)]), inline=False
+            )
             help_embed.add_field(name="Details", value="Type `.help <command name>` for more details about each command.", inline=False)
 
         # If the argument is a command, get the help text from that command:
