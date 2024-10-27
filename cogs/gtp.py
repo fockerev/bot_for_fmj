@@ -15,7 +15,7 @@ import urlextract
 import yaml
 from discord.ext import commands, tasks
 
-VERSION = "20240918_0100"
+VERSION = "20241028_0100"
 
 
 class ImageReso(Enum):
@@ -61,6 +61,7 @@ class gtpconfig(YamlConfig):
 @dataclass
 class botconfig(YamlConfig):
     save_api_response: bool
+    save_image_input: bool
     history_size: int
     default_system_promt: str
 
@@ -173,11 +174,21 @@ class BotCog(commands.Cog):
             self.__history[guild_id][-1]["content"] += f"\n## 以下へ言及\n{reference}"
             self.__logger.info(f"[Reference] {reference}")
 
-        input_messages = self.__history[guild_id]
+        # 画像入力を保持するか
+        if self.config.bot.save_image_input:
+            input_messages = self.__history[guild_id]
+        else:
+            input_messages = copy.deepcopy(self.__history[guild_id])
+
         image_input = []
         if len(attachments) > 0:
+            if self.config.gtp.image_resolution == ImageReso.LOW:
+                reso = "low"
+            else:
+                reso = "high"
+
             for url in attachments:
-                image_input.append({"type": "image_url", "image_url": {"url": url, "detail": "low"}})
+                image_input.append({"type": "image_url", "image_url": {"url": url, "detail": reso}})
 
             self.__logger.info(f"[Attachments] {attachments}")
             image_content = [{"role": "user", "content": image_input}]
@@ -264,21 +275,50 @@ class BotCog(commands.Cog):
         embed.add_field(name="Model", value=self.config.gtp.model, inline=True)
         embed.add_field(name="Temperature", value=self.config.gtp.temperature, inline=True)
         embed.add_field(name="Top_p", value=self.config.gtp.top_p, inline=True)
+        embed.add_field(name="Input Image Resolution", value=self.config.gtp.image_resolution, inline=True)
         embed.add_field(name="Max token", value=self.config.gtp.max_token, inline=True)
         embed.add_field(name="Max history size", value=self.config.bot.history_size, inline=True)
         embed.add_field(name="Save api response", value=self.config.bot.save_api_response, inline=True)
+        embed.add_field(name="Save image input", value=self.config.bot.save_image_input, inline=True)
         if ctx.guild.id in self.__history.keys():
             embed.add_field(name="System prompt", value=self.__history[ctx.guild.id][0]["content"], inline=False)
 
         embed.set_footer(text="made by fockerev")
         await ctx.send(embed=embed)
 
+    @commands.hybrid_command(
+        name="change_config",
+        brief="設定を変更",
+    )
+    async def change_setting(self, ctx, input_highreso_img: bool | None, save_image_input: bool | None, save_response: bool | None, history_size: int | None):
+        msg = ""
+        if input_highreso_img is not None:
+            self.config.gtp.image_resolution = ImageReso(int(input_highreso_img))
+            msg += "change success: Input Image Resolution\n"
+        if history_size is not None and history_size > 0:
+            self.config.bot.history_size = history_size
+            msg += "change success: history_size\n"
+        if save_image_input is not None:
+            self.config.bot.save_image_input = bool(save_image_input)
+            msg += "change success: save_image_input\n"
+        if save_response is not None:
+            self.config.bot.save_api_response = bool(save_response)
+            msg += "change success: save_api_response\n"
+        if len(msg) == 0:
+            msg += "config is unchanged"
+        await ctx.send(msg)
+
+    @commands.hybrid_command(name="reset_config", brief="設定をリセット yamlから再読み込み")
+    async def reset_setting(self, ctx):
+        self.config = AppConfig.load((Path(__file__).resolve().parent / ".." / "setting.yaml").resolve())
+        await ctx.send("Reload config")
+
     @commands.hybrid_command(name="check_history", brief="対話履歴を出力")
     async def check_history(self, ctx):
         if ctx.guild.id in self.__history.keys() and len(self.__history[ctx.guild.id]) > 0:
             embed = discord.Embed(title="History", color=0x00FF4C)
             for idx, hist in enumerate(self.__history[ctx.guild.id]):
-                embed.add_field(name=f"{idx}\t{hist["role"]}", value=f"{hist["content"]}", inline=False)
+                embed.add_field(name=f"{idx}\t{hist['role']}", value=f"{hist['content']}", inline=False)
             await ctx.send(embed=embed)
         else:
             await ctx.send("対話履歴がありません")

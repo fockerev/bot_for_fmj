@@ -3,8 +3,9 @@ gtp:
   max_token: 800  # 最大トークン数
   temperature: 1.0
   top_p: 1.0
-  image_resolution: 0
+  image_resolution: 0 # 0:LOW 1:HIGH
 bot:
   save_api_response: True #APIの応答を履歴に追加するか
-  history_size: 16 #履歴配列の最大長
+  save_image_input: False # 画像入力を保存するか
+  history_size: 10 #履歴配列の最大長
   default_system_promt: "Briefly reply unless otherwise mentioned. speaking Kansai dialect"  # デフォルトのsystemプロンプト
