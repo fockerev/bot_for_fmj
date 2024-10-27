@@ -5,7 +5,9 @@ import logging
 import logging.config
 import re
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
+from typing import Any, Dict, Type, TypeVar
 
 import discord
 import openai
@@ -16,16 +18,27 @@ from discord.ext import commands, tasks
 VERSION = "20240918_0100"
 
 
+class ImageReso(Enum):
+    LOW = 0
+    HIGH = 1
+
+
+T = TypeVar("T", bound="YamlConfig")
+
+
 @dataclass
 class YamlConfig:
     @classmethod
-    def load(cls, config_path: Path):
-        def _convert_from_dict(parent_cls, data):
-            for key, val in data.items():
+    def load(cls: Type[T], config_path: Path) -> T:
+        def _convert_from_dict(parent_cls: Type[T], data: Dict[str, Any]) -> Dict[str, Any]:
+            valid_data = {key: val for key, val in data.items() if key in parent_cls.__dataclass_fields__}
+            for key, val in valid_data.items():
                 child_class = parent_cls.__dataclass_fields__[key].type
                 if inspect.isclass(child_class) and issubclass(child_class, YamlConfig):
-                    data[key] = child_class(**_convert_from_dict(child_class, val))
-            return data
+                    valid_data[key] = child_class(**_convert_from_dict(child_class, val))
+                elif isinstance(child_class, type) and issubclass(child_class, Enum):
+                    valid_data[key] = child_class(val)
+            return valid_data
 
         if config_path.exists() is False:
             raise FileNotFoundError(f"{str(config_path)} is not found")
@@ -37,14 +50,25 @@ class YamlConfig:
 
 
 @dataclass
-class gtpConfig(YamlConfig):
+class gtpconfig(YamlConfig):
     model: str
     max_token: int
     temperature: float
+    image_resolution: ImageReso
     top_p: float
+
+
+@dataclass
+class botconfig(YamlConfig):
     save_api_response: bool
     history_size: int
     default_system_promt: str
+
+
+@dataclass
+class AppConfig(YamlConfig):
+    gtp: gtpconfig
+    bot: botconfig
 
 
 class BotCog(commands.Cog):
@@ -56,9 +80,9 @@ class BotCog(commands.Cog):
         self.__logger = logging.getLogger("gtp")
 
         self.bot = bot
-        self.config = gtpConfig.load((Path(__file__).resolve().parent / ".." / "setting.yaml").resolve())
+        self.config = AppConfig.load((Path(__file__).resolve().parent / ".." / "setting.yaml").resolve())
 
-        self.__init_message: list = [{"role": "system", "content": self.config.default_system_promt}]
+        self.__init_message: list = [{"role": "system", "content": self.config.bot.default_system_promt}]
         self.__history: dict = {}
         self.__token_ranking: dict = {}
 
@@ -103,7 +127,7 @@ class BotCog(commands.Cog):
 
     async def delete_old_history(self, guild_id: int) -> None:
         """一番古い履歴(index = 1) を削除する"""
-        while self.config.history_size < self.check_history_size(guild_id):
+        while self.config.bot.history_size < self.check_history_size(guild_id):
             del self.__history[guild_id][1]
 
     async def parse_message(self, message: discord.message.Message) -> tuple[str, str | None, list]:
@@ -162,11 +186,15 @@ class BotCog(commands.Cog):
 
         # APIに送る
         response = openai.chat.completions.create(
-            model=self.config.model, messages=input_messages, max_tokens=self.config.max_token, temperature=self.config.temperature, top_p=self.config.top_p
+            model=self.config.gtp.model,
+            messages=input_messages,
+            max_tokens=self.config.gtp.max_token,
+            temperature=self.config.gtp.temperature,
+            top_p=self.config.gtp.top_p,
         )
         self.__logger.info(f"[Response] {str(response.choices[0].message.content)}")
 
-        if self.config.save_api_response is True:
+        if self.config.bot.save_api_response is True:
             self.__history[guild_id].append({"role": "assistant", "content": str(response.choices[0].message.content)})
 
         return str(response.choices[0].message.content), response.usage.total_tokens
@@ -233,12 +261,12 @@ class BotCog(commands.Cog):
         embed = discord.Embed(title="Bot Config", color=0xFF0000)
         embed.set_author(name=self.bot.user, url="https://github.com/fockerev/bot_for_fmj")
         embed.add_field(name="BOT VERSION", value=VERSION, inline=False)
-        embed.add_field(name="Model", value=self.config.model, inline=True)
-        embed.add_field(name="Temperature", value=self.config.temperature, inline=True)
-        embed.add_field(name="Top_p", value=self.config.top_p, inline=True)
-        embed.add_field(name="Max token", value=self.config.max_token, inline=True)
-        embed.add_field(name="Max history size", value=self.config.history_size, inline=True)
-        embed.add_field(name="Save api response", value=self.config.save_api_response, inline=True)
+        embed.add_field(name="Model", value=self.config.gtp.model, inline=True)
+        embed.add_field(name="Temperature", value=self.config.gtp.temperature, inline=True)
+        embed.add_field(name="Top_p", value=self.config.gtp.top_p, inline=True)
+        embed.add_field(name="Max token", value=self.config.gtp.max_token, inline=True)
+        embed.add_field(name="Max history size", value=self.config.bot.history_size, inline=True)
+        embed.add_field(name="Save api response", value=self.config.bot.save_api_response, inline=True)
         if ctx.guild.id in self.__history.keys():
             embed.add_field(name="System prompt", value=self.__history[ctx.guild.id][0]["content"], inline=False)
 
