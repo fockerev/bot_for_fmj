@@ -1,4 +1,5 @@
 import copy
+import datetime
 import inspect
 import json
 import logging
@@ -55,7 +56,6 @@ class gtpconfig(YamlConfig):
     max_token: int
     temperature: float
     image_resolution: ImageReso
-    top_p: float
 
 
 @dataclass
@@ -86,6 +86,7 @@ class BotCog(commands.Cog):
         self.__init_message: list = [{"role": "system", "content": self.config.bot.default_system_promt}]
         self.__history: dict = {}
         self.__token_ranking: dict = {}
+        self.__last_activity: datetime = datetime.datetime.now()
 
     async def reset_history(self, guild_id: int) -> bool:
         """履歴削除"""
@@ -201,12 +202,13 @@ class BotCog(commands.Cog):
             messages=input_messages,
             max_tokens=self.config.gtp.max_token,
             temperature=self.config.gtp.temperature,
-            top_p=self.config.gtp.top_p,
         )
         self.__logger.info(f"[Response] {str(response.choices[0].message.content)}")
 
         if self.config.bot.save_api_response is True:
             self.__history[guild_id].append({"role": "assistant", "content": str(response.choices[0].message.content)})
+
+        self.__last_activity = datetime.datetime.now()
 
         return str(response.choices[0].message.content), response.usage.total_tokens
 
@@ -267,14 +269,13 @@ class BotCog(commands.Cog):
 
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name="check_config", brief="現在の設定を出力")
+    @commands.hybrid_command(name="info", brief="現在の設定を出力")
     async def check_setting(self, ctx):
         embed = discord.Embed(title="Bot Config", color=0xFF0000)
         embed.set_author(name=self.bot.user, url="https://github.com/fockerev/bot_for_fmj")
         embed.add_field(name="BOT VERSION", value=VERSION, inline=False)
         embed.add_field(name="Model", value=self.config.gtp.model, inline=True)
         embed.add_field(name="Temperature", value=self.config.gtp.temperature, inline=True)
-        embed.add_field(name="Top_p", value=self.config.gtp.top_p, inline=True)
         embed.add_field(name="Input Image Resolution", value=self.config.gtp.image_resolution, inline=True)
         embed.add_field(name="Max token", value=self.config.gtp.max_token, inline=True)
         embed.add_field(name="Max history size", value=self.config.bot.history_size, inline=True)
@@ -283,27 +284,35 @@ class BotCog(commands.Cog):
         if ctx.guild.id in self.__history.keys():
             embed.add_field(name="System prompt", value=self.__history[ctx.guild.id][0]["content"], inline=False)
 
-        embed.set_footer(text="made by fockerev")
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(
-        name="change_config",
-        brief="設定を変更",
-    )
+    @commands.hybrid_command(name="change_config", brief="設定を変更")
     async def change_setting(self, ctx, input_highreso_img: bool | None, save_image_input: bool | None, save_response: bool | None, history_size: int | None):
         msg = ""
         if input_highreso_img is not None:
             self.config.gtp.image_resolution = ImageReso(int(input_highreso_img))
-            msg += "change success: Input Image Resolution\n"
+            if self.config.gtp.image_resolution == ImageReso(int(input_highreso_img)):
+                msg += f"[Success] Input Image Resolution -> {self.config.gtp.image_resolution}\n"
+            else:
+                msg += "[Fail] Input Image Resolution\n"
         if history_size is not None and history_size > 0:
             self.config.bot.history_size = history_size
-            msg += "change success: history_size\n"
+            if self.config.bot.history_size == history_size:
+                msg += f"[Success] history_size -> {self.config.bot.history_size}\n"
+            else:
+                msg += "[Fail] history_size\n"
         if save_image_input is not None:
             self.config.bot.save_image_input = bool(save_image_input)
-            msg += "change success: save_image_input\n"
+            if self.config.bot.save_image_input == bool(save_image_input):
+                msg += f"[Success] save_image_input -> {self.config.bot.save_image_input}\n"
+            else:
+                msg += "[Fail] save_image_input\n"
         if save_response is not None:
             self.config.bot.save_api_response = bool(save_response)
-            msg += "change success: save_api_response\n"
+            if self.config.bot.save_api_response == bool(save_response):
+                msg += f"[Success] save_api_response -> {self.config.bot.save_api_response}\n"
+            else:
+                msg += "[Fail] save_api_response\n"
         if len(msg) == 0:
             msg += "config is unchanged"
         await ctx.send(msg)
@@ -313,7 +322,7 @@ class BotCog(commands.Cog):
         self.config = AppConfig.load((Path(__file__).resolve().parent / ".." / "setting.yaml").resolve())
         await ctx.send("Reload config")
 
-    @commands.hybrid_command(name="check_history", brief="対話履歴を出力")
+    @commands.hybrid_command(name="history", brief="対話履歴を出力")
     async def check_history(self, ctx):
         if ctx.guild.id in self.__history.keys() and len(self.__history[ctx.guild.id]) > 0:
             embed = discord.Embed(title="History", color=0x00FF4C)
@@ -346,12 +355,15 @@ class BotCog(commands.Cog):
         await ctx.send(embed=help_embed)
 
     # ループ処理
-    @tasks.loop(minutes=60)
+    @tasks.loop(minutes=5)
     async def loop_reset(self):
-        if len(self.__history.keys()) > 0:
-            for guild_id in self.__history.keys():
-                await self.reset_history(guild_id)
-        self.__logger.info("cyclic history reset")
+        # 最終アクティビティから60分後に履歴リセット
+        if (datetime.datetime.now() - self.__last_activity).total_seconds() > 60 * 60:
+            if len(self.__history.keys()) > 0:
+                for guild_id in self.__history.keys():
+                    await self.reset_history(guild_id)
+                self.__logger.info("cyclic history reset")
+                self.__last_activity = datetime.datetime.now()
 
     # メッセージ受信時実行
     @commands.Cog.listener()
