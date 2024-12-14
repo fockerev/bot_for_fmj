@@ -1,7 +1,7 @@
 discord==2.3.2
 discord.py==2.3.2
 numpy==1.26.3
-openai==1.10.0
+openai==1.57.4
 pandas==2.2.0
 python-dotenv==1.0.1
 urlextract
