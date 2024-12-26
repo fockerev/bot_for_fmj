@@ -16,7 +16,7 @@ import urlextract
 import yaml
 from discord.ext import commands, tasks
 
-VERSION = "20241028_0100"
+VERSION = "20241226_2000"
 
 
 class ImageReso(Enum):
@@ -212,14 +212,14 @@ class BotCog(commands.Cog):
 
         return str(response.choices[0].message.content), response.usage.total_tokens
 
-    async def token_ranking(self, author: discord.Member, usage: int):
-        if isinstance(self.__token_ranking, dict) is False:
+    async def token_ranking(self, guild_id: int, author: discord.Member, usage: int):
+        if isinstance(self.__token_ranking[guild_id], dict) is False:
             self.__token_ranking = {}
 
-        if author.id in self.__token_ranking.keys():
-            self.__token_ranking[author.id] += usage
+        if author.id in self.__token_ranking[guild_id].keys():
+            self.__token_ranking[guild_id][author.id] += usage
         else:
-            self.__token_ranking.setdefault(author.id, usage)
+            self.__token_ranking[guild_id].setdefault(author.id, usage)
 
     # 立ち上げ完了時実行
     @commands.Cog.listener()
@@ -253,11 +253,11 @@ class BotCog(commands.Cog):
 
     @commands.hybrid_command(name="ranking", brief="トークン使用量ランキグン")
     async def ranking(self, ctx):
-        if len(self.__token_ranking) < 1:
+        if ctx.guild.id not in self.__token_ranking.keys() or len(self.__token_ranking[ctx.guild.id]) < 1:
             await ctx.send("まだ誰もAPIを使用していません")
             return
 
-        ranking_sorted = sorted(self.__token_ranking.items(), key=lambda x: x[1], reverse=True)
+        ranking_sorted = sorted(self.__token_ranking[ctx.guild.id].items(), key=lambda x: x[1], reverse=True)
         embed = discord.Embed(title="Token使用量ランキング", color=discord.Colour.red())
         for x, dict in enumerate(ranking_sorted):
             if 3 < x:
@@ -374,10 +374,14 @@ class BotCog(commands.Cog):
 
         if self.bot.user.id in [member.id for member in message.mentions]:
             try:
+                # 履歴リストの初期化
                 self.__history.setdefault(message.guild.id, copy.deepcopy(self.__init_message))
+                self.__token_ranking.setdefault(message.guild.id, {})
+                # リクエスト
                 plane_message, reference_message, attatchments = await self.parse_message(message)
                 response, usage = await self.send_question_gtp(plane_message, reference_message, attatchments, message.guild.id)
-                await self.token_ranking(message.author, usage)
+                # 履歴リスト更新
+                await self.token_ranking(message.guild.id, message.author, usage)
                 await self.delete_old_history(guild_id=message.guild.id)
                 await message.channel.send(response)
             except Exception as e:
