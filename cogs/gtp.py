@@ -16,7 +16,7 @@ import urlextract
 import yaml
 from discord.ext import commands, tasks
 
-VERSION = "20241226_2000"
+VERSION = "20250414_2000"
 
 
 class ImageReso(Enum):
@@ -100,7 +100,7 @@ class BotCog(commands.Cog):
     async def reset_charactor(self, guild_id: int) -> bool:
         """性格をリセットする"""
         if guild_id in self.__history.keys():
-            self.__history[guild_id] = self.__init_message
+            self.__history[guild_id][0] = self.__init_message[0]
             self.__logger.info("system charactor reset")
             return True
         else:
@@ -133,6 +133,19 @@ class BotCog(commands.Cog):
             del self.__history[guild_id][1]
 
     async def parse_message(self, message: discord.message.Message) -> tuple[str, str | None, list]:
+        """入力メッセージを処理して、入力・参照・添付ファイルにする
+
+        Args:
+            message (discord.message.Message): 入力メッセージ
+
+        Raises:
+            ValueError: 非対応な拡張子の場合
+            ValueError: 無効なURLの場合
+
+        Returns:
+            tuple[str, str | None, list]: 入力, 参照, 添付ファイルのリスト
+        """
+
         reference_message = None
         attachments_list = []
 
@@ -145,7 +158,7 @@ class BotCog(commands.Cog):
 
         # 添付ファイルの抽出
         # 対応ファイル形式
-        extention = re.compile(r".png|.jpg|.gif")
+        extention = re.compile(r".png|.jpg|.jpeg|.gif")
         # 直接メッセージに添付
         if 0 < len(message.attachments):
             for attach in message.attachments:
@@ -168,6 +181,17 @@ class BotCog(commands.Cog):
         return plane_message, reference_message, attachments_list
 
     async def send_question_gtp(self, question: str, reference: str, attachments: list, guild_id: int) -> tuple[str, int]:
+        """OpenAI APIでリクエストを送信し結果を得る
+
+        Args:
+            question (str): 入力テキスト
+            reference (str): 参照先テキスト
+            attachments (list): 添付ファイル
+            guild_id (int): サーバーID
+
+        Returns:
+            tuple[str, int]: 応答, 消費トークン数
+        """
         self.__logger.info(f"[Question] {question}")
 
         self.__history[guild_id].append({"role": "user", "content": question})
@@ -181,6 +205,7 @@ class BotCog(commands.Cog):
         else:
             input_messages = copy.deepcopy(self.__history[guild_id])
 
+        # 画像入力作成
         image_input = []
         if len(attachments) > 0:
             if self.config.gtp.image_resolution == ImageReso.LOW:
@@ -362,6 +387,7 @@ class BotCog(commands.Cog):
             if len(self.__history.keys()) > 0:
                 for guild_id in self.__history.keys():
                     await self.reset_history(guild_id)
+
                 self.__logger.info("cyclic history reset")
                 self.__last_activity = datetime.datetime.now()
 
@@ -377,13 +403,16 @@ class BotCog(commands.Cog):
                 # 履歴リストの初期化
                 self.__history.setdefault(message.guild.id, copy.deepcopy(self.__init_message))
                 self.__token_ranking.setdefault(message.guild.id, {})
+
                 # リクエスト
                 plane_message, reference_message, attatchments = await self.parse_message(message)
                 response, usage = await self.send_question_gtp(plane_message, reference_message, attatchments, message.guild.id)
+
                 # 履歴リスト更新
                 await self.token_ranking(message.guild.id, message.author, usage)
                 await self.delete_old_history(guild_id=message.guild.id)
                 await message.channel.send(response)
+
             except Exception as e:
                 self.__logger.exception("error occured in gtp processing")
                 await message.channel.send(f"なんかエラー出た {e}")
