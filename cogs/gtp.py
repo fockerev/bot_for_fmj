@@ -269,7 +269,7 @@ class BotCog(commands.Cog):
             await ctx.send("性格のリセットに失敗しました")
 
     @commands.hybrid_command(name="chara", brief="引数で入力した文を性格として設定する")
-    async def change(self, ctx, text):
+    async def change(self, ctx: commands.context.Context, text):
         ret = await self.change_charactor(guild_id=ctx.guild.id, txt=text)
         if ret:
             await ctx.send("性格を変更しました")
@@ -312,7 +312,14 @@ class BotCog(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="change_config", brief="設定を変更")
-    async def change_setting(self, ctx, input_highreso_img: bool | None, save_image_input: bool | None, save_response: bool | None, history_size: int | None):
+    async def change_setting(
+        self,
+        ctx: commands.context.Context,
+        input_highreso_img: bool | None,
+        save_image_input: bool | None,
+        save_response: bool | None,
+        history_size: int | None,
+    ):
         msg = ""
         if input_highreso_img is not None:
             self.config.gtp.image_resolution = ImageReso(int(input_highreso_img))
@@ -358,7 +365,7 @@ class BotCog(commands.Cog):
             await ctx.send("対話履歴がありません")
 
     @commands.hybrid_command(name="help", brief="help")
-    async def help(self, ctx, args=None):
+    async def help(self, ctx: commands.context.Context, args=None):
         help_embed = discord.Embed()
         command_names_list = [x.name for x in self.bot.commands]
 
@@ -378,6 +385,33 @@ class BotCog(commands.Cog):
             help_embed.add_field(name="Nope.", value="Don't think I got that command, boss!")
 
         await ctx.send(embed=help_embed)
+
+    @commands.hybrid_command(name="search", brief="[beta]Web検索を使用して回答")
+    async def web_search_question(self, ctx: commands.context.Context, input: str):
+        """サーチAPIを使って回答を生成する"""
+        try:
+            # 履歴リストの初期化
+            self.__history.setdefault(ctx.guild.id, copy.deepcopy(self.__init_message))
+            self.__token_ranking.setdefault(ctx.guild.id, {})
+
+            self.__logger.info(f"[Search Input] {str(input)}")
+            self.__history[ctx.guild.id].append({"role": "user", "content": input})
+
+            await ctx.defer()
+            response = openai.responses.create(model=self.config.gtp.model, tools=[{"type": "web_search_preview"}], input=self.__history[ctx.guild.id])
+            self.__logger.info(f"[Response] {str(response.output_text)}")
+
+            if self.config.bot.save_api_response is True:
+                self.__history[ctx.guild.id].append({"role": "assistant", "content": str(response.output_text)})
+
+            await self.delete_old_history(guild_id=ctx.guild.id)
+
+            await self.token_ranking(ctx.guild.id, ctx.author, response.usage.total_tokens)
+            await ctx.send(content=str(response.output_text))
+
+        except Exception as e:
+            self.__logger.exception("error occured in seach api processing")
+            await ctx.send(f"なんかエラー出た {e}")
 
     # ループ処理
     @tasks.loop(minutes=5)
