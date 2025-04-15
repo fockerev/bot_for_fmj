@@ -359,6 +359,8 @@ class BotCog(commands.Cog):
         if ctx.guild.id in self.__history.keys() and len(self.__history[ctx.guild.id]) > 0:
             embed = discord.Embed(title="History", color=0x00FF4C)
             for idx, hist in enumerate(self.__history[ctx.guild.id]):
+                if len(hist) > 150:
+                    hist = hist[:150]
                 embed.add_field(name=f"{idx}\t{hist['role']}", value=f"{hist['content']}", inline=False)
             await ctx.send(embed=embed)
         else:
