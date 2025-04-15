@@ -359,8 +359,8 @@ class BotCog(commands.Cog):
         if ctx.guild.id in self.__history.keys() and len(self.__history[ctx.guild.id]) > 0:
             embed = discord.Embed(title="History", color=0x00FF4C)
             for idx, hist in enumerate(self.__history[ctx.guild.id]):
-                if len(hist) > 150:
-                    hist = hist[:150]
+                if len(hist["content"]) > 150:
+                    hist["content"] = hist["content"][:150]
                 embed.add_field(name=f"{idx}\t{hist['role']}", value=f"{hist['content']}", inline=False)
             await ctx.send(embed=embed)
         else:
@@ -400,7 +400,9 @@ class BotCog(commands.Cog):
             self.__history[ctx.guild.id].append({"role": "user", "content": input})
 
             await ctx.defer()
-            response = openai.responses.create(model=self.config.gtp.model, tools=[{"type": "web_search_preview"}], input=self.__history[ctx.guild.id])
+            response = openai.responses.create(
+                model=self.config.gtp.model, tools=[{"type": "web_search_preview"}], input=self.__history[ctx.guild.id], max_output_tokens=800
+            )
             self.__logger.info(f"[Response] {str(response.output_text)}")
 
             if self.config.bot.save_api_response is True:
