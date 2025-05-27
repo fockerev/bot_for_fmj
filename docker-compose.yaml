@@ -4,7 +4,8 @@ services:
       context: .
       network: host
     environment:
-      - DISCORD_BOT_TOKEN=YOUR_TOKEN
-      - OPENAI_API_KEY=YOUR_TOKEN
-      - GUILD_ID=YOUR_SERVER_ID
-      - BOT_PREFIX=/
+      TZ: Asia/Tokyo
+      BOT_PREFIX: /
+      DISCORD_BOT_TOKEN: YOUR_TOKEN
+      OPENAI_API_KEY: YOUR_TOKEN
+      GUILD_ID: YOUR_SERVER_ID
