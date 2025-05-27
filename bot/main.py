@@ -2,10 +2,7 @@ import asyncio
 import os
 
 import discord
-import dotenv
 from discord.ext import commands
-
-dotenv.load_dotenv(verbose=True)
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 GUILD_ID_LIST = [id.strip() for id in os.getenv("GUILD_ID").split(",")]
