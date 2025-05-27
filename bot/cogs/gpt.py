@@ -16,7 +16,7 @@ import urlextract
 import yaml
 from discord.ext import commands, tasks
 
-VERSION = "20250414_2000"
+VERSION = "20250527_2100"
 
 
 class ImageReso(Enum):
