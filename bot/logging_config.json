@@ -28,7 +28,7 @@
             "handlers": ["consoleHandler"],
             "propagate": false
         },
-        "gtp": {
+        "gpt": {
             "level": "DEBUG",
             "handlers": ["consoleHandler"],
             "propagate": false

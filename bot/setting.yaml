@@ -1,4 +1,4 @@
-gtp:
+gpt:
   model: "gpt-4o"
   max_token: 800  # 最大トークン数
   temperature: 1.0

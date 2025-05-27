@@ -51,7 +51,7 @@ class YamlConfig:
 
 
 @dataclass
-class gtpconfig(YamlConfig):
+class gptconfig(YamlConfig):
     model: str
     max_token: int
     temperature: float
@@ -68,7 +68,7 @@ class botconfig(YamlConfig):
 
 @dataclass
 class AppConfig(YamlConfig):
-    gtp: gtpconfig
+    gpt: gptconfig
     bot: botconfig
 
 
@@ -78,7 +78,7 @@ class BotCog(commands.Cog):
         with open(str((Path(__file__).resolve().parent / ".." / "logging_config.json").resolve()), "r") as f:
             log_conf = json.load(f)
         logging.config.dictConfig(log_conf)
-        self.__logger = logging.getLogger("gtp")
+        self.__logger = logging.getLogger("gpt")
 
         self.bot = bot
         self.config = AppConfig.load((Path(__file__).resolve().parent / ".." / "setting.yaml").resolve())
@@ -107,7 +107,7 @@ class BotCog(commands.Cog):
             return False
 
     async def change_charactor(self, guild_id: int, txt: str) -> bool:
-        """gtpにわたす性格設定を変更する
+        """gptにわたす性格設定を変更する
 
         Args:
             txt (str): 変更先の性格設定文
@@ -185,7 +185,7 @@ class BotCog(commands.Cog):
 
         return plane_message, reference_message, attachments_list
 
-    async def send_question_gtp(self, question: str, reference: str, attachments: list, guild_id: int) -> tuple[str, int]:
+    async def send_question_gpt(self, question: str, reference: str, attachments: list, guild_id: int) -> tuple[str, int]:
         """OpenAI APIでリクエストを送信し結果を得る
 
         Args:
@@ -213,7 +213,7 @@ class BotCog(commands.Cog):
         # 画像入力作成
         image_input = []
         if len(attachments) > 0:
-            if self.config.gtp.image_resolution == ImageReso.LOW:
+            if self.config.gpt.image_resolution == ImageReso.LOW:
                 reso = "low"
             else:
                 reso = "high"
@@ -228,10 +228,10 @@ class BotCog(commands.Cog):
 
         # APIに送る
         response = openai.chat.completions.create(
-            model=self.config.gtp.model,
+            model=self.config.gpt.model,
             messages=input_messages,
-            max_tokens=self.config.gtp.max_token,
-            temperature=self.config.gtp.temperature,
+            max_tokens=self.config.gpt.max_token,
+            temperature=self.config.gpt.temperature,
         )
         self.__logger.info(f"[Response] {str(response.choices[0].message.content)}")
 
@@ -304,10 +304,10 @@ class BotCog(commands.Cog):
         embed = discord.Embed(title="Bot Config", color=0xFF0000)
         embed.set_author(name=self.bot.user, url="https://github.com/fockerev/bot_for_fmj")
         embed.add_field(name="BOT VERSION", value=VERSION, inline=False)
-        embed.add_field(name="Model", value=self.config.gtp.model, inline=True)
-        embed.add_field(name="Temperature", value=self.config.gtp.temperature, inline=True)
-        embed.add_field(name="Input Image Resolution", value=self.config.gtp.image_resolution, inline=True)
-        embed.add_field(name="Max token", value=self.config.gtp.max_token, inline=True)
+        embed.add_field(name="Model", value=self.config.gpt.model, inline=True)
+        embed.add_field(name="Temperature", value=self.config.gpt.temperature, inline=True)
+        embed.add_field(name="Input Image Resolution", value=self.config.gpt.image_resolution, inline=True)
+        embed.add_field(name="Max token", value=self.config.gpt.max_token, inline=True)
         embed.add_field(name="Max history size", value=self.config.bot.history_size, inline=True)
         embed.add_field(name="Save api response", value=self.config.bot.save_api_response, inline=True)
         embed.add_field(name="Save image input", value=self.config.bot.save_image_input, inline=True)
@@ -327,9 +327,9 @@ class BotCog(commands.Cog):
     ):
         msg = ""
         if input_highreso_img is not None:
-            self.config.gtp.image_resolution = ImageReso(int(input_highreso_img))
-            if self.config.gtp.image_resolution == ImageReso(int(input_highreso_img)):
-                msg += f"[Success] Input Image Resolution -> {self.config.gtp.image_resolution}\n"
+            self.config.gpt.image_resolution = ImageReso(int(input_highreso_img))
+            if self.config.gpt.image_resolution == ImageReso(int(input_highreso_img)):
+                msg += f"[Success] Input Image Resolution -> {self.config.gpt.image_resolution}\n"
             else:
                 msg += "[Fail] Input Image Resolution\n"
         if history_size is not None and history_size > 0:
@@ -406,7 +406,7 @@ class BotCog(commands.Cog):
 
             await ctx.defer()
             response = openai.responses.create(
-                model=self.config.gtp.model, tools=[{"type": "web_search_preview"}], input=self.__history[ctx.guild.id], max_output_tokens=800
+                model=self.config.gpt.model, tools=[{"type": "web_search_preview"}], input=self.__history[ctx.guild.id], max_output_tokens=800
             )
             self.__logger.info(f"[Response] {str(response.output_text)}")
 
@@ -449,7 +449,7 @@ class BotCog(commands.Cog):
 
                 # リクエスト
                 plane_message, reference_message, attatchments = await self.parse_message(message)
-                response, usage = await self.send_question_gtp(plane_message, reference_message, attatchments, message.guild.id)
+                response, usage = await self.send_question_gpt(plane_message, reference_message, attatchments, message.guild.id)
 
                 # 履歴リスト更新
                 await self.token_ranking(message.guild.id, message.author, usage)
@@ -457,7 +457,7 @@ class BotCog(commands.Cog):
                 await message.channel.send(response)
 
             except Exception as e:
-                self.__logger.exception("error occured in gtp processing")
+                self.__logger.exception("error occured in gpt processing")
                 await message.channel.send(f"なんかエラー出た {e}")
         return
 
