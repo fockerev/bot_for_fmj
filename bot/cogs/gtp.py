@@ -112,12 +112,17 @@ class BotCog(commands.Cog):
         Args:
             txt (str): 変更先の性格設定文
         """
-        if guild_id in self.__history.keys():
-            self.__history[guild_id][0] = {"role": "system", "content": txt}
-            self.__logger.info(f"system charactor changed -> {txt}")
-            return True
-        else:
+        try:
+            if guild_id in self.__history.keys():
+                self.__history[guild_id][0] = {"role": "system", "content": txt}
+                self.__logger.info(f"system charactor changed -> {txt}")
+            else:
+                self.__history[guild_id] = [{"role": "system", "content": txt}]
+                self.__logger.info(f"charactor created for new server-> {txt}")
+        except Exception:
+            self.__logger.exception("Charactor setting failed")
             return False
+        return True
 
     def check_history_size(self, guild_id: int) -> int:
         """履歴配列長の確認
