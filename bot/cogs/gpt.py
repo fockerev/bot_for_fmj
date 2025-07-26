@@ -1,4 +1,3 @@
-import copy
 import datetime
 import inspect
 import json
@@ -15,6 +14,10 @@ import openai
 import urlextract
 import yaml
 from discord.ext import commands, tasks
+
+import semantic_kernel as sk
+from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion
+from semantic_kernel.contents.chat_history import ChatHistory
 
 VERSION = "20250527_2100"
 
@@ -83,15 +86,20 @@ class BotCog(commands.Cog):
         self.bot = bot
         self.config = AppConfig.load((Path(__file__).resolve().parent / ".." / "setting.yaml").resolve())
 
-        self.__init_message: list = [{"role": "system", "content": self.config.bot.default_system_promt}]
-        self.__history: dict = {}
+        # Initialize Semantic Kernel
+        self.kernel = sk.Kernel()
+        chat_completion = OpenAIChatCompletion(ai_model_id=self.config.gpt.model, service_id="chat-gpt")
+        self.kernel.add_service(chat_completion)
+
+        self.__chat_histories: dict = {}  # Semantic Kernel chat histories
         self.__token_ranking: dict = {}
         self.__last_activity: datetime = datetime.datetime.now()
 
     async def reset_history(self, guild_id: int) -> bool:
         """履歴削除"""
-        if guild_id in self.__history:
-            self.__history[guild_id] = [self.__history[guild_id][0]]
+        if guild_id in self.__chat_histories:
+            self.__chat_histories[guild_id] = ChatHistory()
+            self.__chat_histories[guild_id].add_system_message(self.config.bot.default_system_promt)
             self.__logger.info("history reset")
             return True
         else:
@@ -99,8 +107,9 @@ class BotCog(commands.Cog):
 
     async def reset_charactor(self, guild_id: int) -> bool:
         """性格をリセットする"""
-        if guild_id in self.__history.keys():
-            self.__history[guild_id][0] = self.__init_message[0]
+        if guild_id in self.__chat_histories.keys():
+            self.__chat_histories[guild_id] = ChatHistory()
+            self.__chat_histories[guild_id].add_system_message(self.config.bot.default_system_promt)
             self.__logger.info("system charactor reset")
             return True
         else:
@@ -113,11 +122,11 @@ class BotCog(commands.Cog):
             txt (str): 変更先の性格設定文
         """
         try:
-            if guild_id in self.__history.keys():
-                self.__history[guild_id][0] = {"role": "system", "content": txt}
+            self.__chat_histories[guild_id] = ChatHistory()
+            self.__chat_histories[guild_id].add_system_message(txt)
+            if guild_id in self.__chat_histories.keys():
                 self.__logger.info(f"system charactor changed -> {txt}")
             else:
-                self.__history[guild_id] = [{"role": "system", "content": txt}]
                 self.__logger.info(f"charactor created for new server-> {txt}")
         except Exception:
             self.__logger.exception("Charactor setting failed")
@@ -130,12 +139,32 @@ class BotCog(commands.Cog):
         Returns:
             int : 配列長
         """
-        return int(len(self.__history[guild_id]))
+        if guild_id in self.__chat_histories:
+            return len(self.__chat_histories[guild_id].messages)
+        return 0
 
     async def delete_old_history(self, guild_id: int) -> None:
-        """一番古い履歴(index = 1) を削除する"""
-        while self.config.bot.history_size < self.check_history_size(guild_id):
-            del self.__history[guild_id][1]
+        """一番古い履歴を削除する"""
+        if guild_id in self.__chat_histories and len(self.__chat_histories[guild_id].messages) > self.config.bot.history_size:
+            # Keep system message and remove oldest user/assistant messages
+            messages = self.__chat_histories[guild_id].messages
+            system_messages = [msg for msg in messages if msg.role.value == "system"]
+            other_messages = [msg for msg in messages if msg.role.value != "system"]
+            if len(other_messages) > self.config.bot.history_size - len(system_messages):
+                # Remove the oldest non-system messages
+                other_messages = other_messages[-(self.config.bot.history_size - len(system_messages)) :]
+
+            # Reconstruct chat history
+            new_chat_history = ChatHistory()
+            for msg in system_messages:
+                new_chat_history.add_system_message(str(msg.content))
+            for msg in other_messages:
+                if msg.role.value == "user":
+                    new_chat_history.add_user_message(str(msg.content))
+                elif msg.role.value == "assistant":
+                    new_chat_history.add_assistant_message(str(msg.content))
+
+            self.__chat_histories[guild_id] = new_chat_history
 
     async def parse_message(self, message: discord.message.Message) -> tuple[str, str | None, list]:
         """入力メッセージを処理して、入力・参照・添付ファイルにする
@@ -186,7 +215,7 @@ class BotCog(commands.Cog):
         return plane_message, reference_message, attachments_list
 
     async def send_question_gpt(self, question: str, reference: str, attachments: list, guild_id: int) -> tuple[str, int]:
-        """OpenAI APIでリクエストを送信し結果を得る
+        """Semantic Kernelでリクエストを送信し結果を得る
 
         Args:
             question (str): 入力テキスト
@@ -199,48 +228,80 @@ class BotCog(commands.Cog):
         """
         self.__logger.info(f"[Question] {question}")
 
-        self.__history[guild_id].append({"role": "user", "content": question})
+        # Initialize chat history if not exists
+        if guild_id not in self.__chat_histories:
+            self.__chat_histories[guild_id] = ChatHistory()
+            self.__chat_histories[guild_id].add_system_message(self.config.bot.default_system_promt)
+
+        # Build user message
+        user_message = question
         if reference is not None:
-            self.__history[guild_id][-1]["content"] += f"\n## 以下へ言及\n{reference}"
+            user_message += f"\n## 以下へ言及\n{reference}"
             self.__logger.info(f"[Reference] {reference}")
 
-        # 画像入力を保持するか
-        if self.config.bot.save_image_input:
-            input_messages = self.__history[guild_id]
-        else:
-            input_messages = copy.deepcopy(self.__history[guild_id])
+        # Add user message to chat history
+        # Will be added later based on whether it's text-only or has images
 
-        # 画像入力作成
-        image_input = []
+        # Handle image attachments (fallback to OpenAI direct call for vision)
         if len(attachments) > 0:
+            self.__logger.info(f"[Attachments] {attachments}")
+            # For vision tasks, fallback to direct OpenAI API call
             if self.config.gpt.image_resolution == ImageReso.LOW:
                 reso = "low"
             else:
                 reso = "high"
 
+            image_input = []
             for url in attachments:
                 image_input.append({"type": "image_url", "image_url": {"url": url, "detail": reso}})
 
-            self.__logger.info(f"[Attachments] {attachments}")
-            image_content = [{"role": "user", "content": image_input}]
-            # Token使用料削減のため画像は履歴として保持しない
-            input_messages += image_content
+            # Convert chat history to OpenAI format for vision
+            messages = []
+            for msg in self.__chat_histories[guild_id].messages:
+                messages.append({"role": msg.role.value, "content": str(msg.content)})
 
-        # APIに送る
-        response = openai.chat.completions.create(
-            model=self.config.gpt.model,
-            messages=input_messages,
-            max_tokens=self.config.gpt.max_token,
-            temperature=self.config.gpt.temperature,
-        )
-        self.__logger.info(f"[Response] {str(response.choices[0].message.content)}")
+            # Add user message with images to both histories
+            self.__chat_histories[guild_id].add_user_message(user_message)
 
-        if self.config.bot.save_api_response is True:
-            self.__history[guild_id].append({"role": "assistant", "content": str(response.choices[0].message.content)})
+            # Add current message with images
+            messages.append({"role": "user", "content": [{"type": "text", "text": user_message}] + image_input})
+
+            response = openai.chat.completions.create(
+                model=self.config.gpt.model,
+                messages=messages,
+                max_tokens=self.config.gpt.max_token,
+                temperature=self.config.gpt.temperature,
+            )
+            response_text = str(response.choices[0].message.content)
+            total_tokens = response.usage.total_tokens
+
+            # Add assistant response to chat history
+            self.__chat_histories[guild_id].add_assistant_message(response_text)
+        else:
+            # Use Semantic Kernel for text-only conversations
+            self.__chat_histories[guild_id].add_user_message(user_message)
+
+            chat_completion = self.kernel.get_service("chat-gpt")
+            response = await chat_completion.get_chat_message_contents(
+                chat_history=self.__chat_histories[guild_id],
+                settings=sk.openai.OpenAIChatPromptExecutionSettings(max_tokens=self.config.gpt.max_token, temperature=self.config.gpt.temperature),
+            )
+
+            response_text = str(response[0].content)
+            # Note: Semantic Kernel doesn't directly provide token usage,
+            # so we'll estimate or use a placeholder
+            total_tokens = 0  # You may need to implement token counting separately
+
+            # Add assistant response to chat history
+            self.__chat_histories[guild_id].add_assistant_message(response_text)
+
+        self.__logger.info(f"[Response] {response_text}")
+
+        # Response is already added to chat history above
 
         self.__last_activity = datetime.datetime.now()
 
-        return str(response.choices[0].message.content), response.usage.total_tokens
+        return response_text, total_tokens
 
     async def token_ranking(self, guild_id: int, author: discord.Member, usage: int):
         if isinstance(self.__token_ranking[guild_id], dict) is False:
@@ -311,8 +372,10 @@ class BotCog(commands.Cog):
         embed.add_field(name="Max history size", value=self.config.bot.history_size, inline=True)
         embed.add_field(name="Save api response", value=self.config.bot.save_api_response, inline=True)
         embed.add_field(name="Save image input", value=self.config.bot.save_image_input, inline=True)
-        if ctx.guild.id in self.__history.keys():
-            embed.add_field(name="System prompt", value=self.__history[ctx.guild.id][0]["content"], inline=False)
+        if ctx.guild.id in self.__chat_histories.keys():
+            system_messages = [msg for msg in self.__chat_histories[ctx.guild.id].messages if msg.role.value == "system"]
+            if system_messages:
+                embed.add_field(name="System prompt", value=str(system_messages[0].content), inline=False)
 
         await ctx.send(embed=embed)
 
@@ -361,12 +424,13 @@ class BotCog(commands.Cog):
 
     @commands.hybrid_command(name="history", brief="対話履歴を出力")
     async def check_history(self, ctx):
-        if ctx.guild.id in self.__history.keys() and len(self.__history[ctx.guild.id]) > 0:
+        if ctx.guild.id in self.__chat_histories.keys() and len(self.__chat_histories[ctx.guild.id].messages) > 0:
             embed = discord.Embed(title="History", color=0x00FF4C)
-            for idx, hist in enumerate(self.__history[ctx.guild.id]):
-                if len(hist["content"]) > 150:
-                    hist["content"] = hist["content"][:150]
-                embed.add_field(name=f"{idx}\t{hist['role']}", value=f"{hist['content']}", inline=False)
+            for idx, msg in enumerate(self.__chat_histories[ctx.guild.id].messages):
+                content = str(msg.content)
+                if len(content) > 150:
+                    content = content[:150]
+                embed.add_field(name=f"{idx}\t{msg.role.value}", value=f"{content}", inline=False)
             await ctx.send(embed=embed)
         else:
             await ctx.send("対話履歴がありません")
@@ -398,25 +462,35 @@ class BotCog(commands.Cog):
         """サーチAPIを使って回答を生成する"""
         try:
             # 履歴リストの初期化
-            self.__history.setdefault(ctx.guild.id, copy.deepcopy(self.__init_message))
             self.__token_ranking.setdefault(ctx.guild.id, {})
 
+            # Initialize Semantic Kernel chat history if not exists
+            if ctx.guild.id not in self.__chat_histories:
+                self.__chat_histories[ctx.guild.id] = ChatHistory()
+                self.__chat_histories[ctx.guild.id].add_system_message(self.config.bot.default_system_promt)
+
             self.__logger.info(f"[Search Input] {str(input)}")
-            self.__history[ctx.guild.id].append({"role": "user", "content": input})
+            self.__chat_histories[ctx.guild.id].add_user_message(input)
 
             await ctx.defer()
-            response = openai.responses.create(
-                model=self.config.gpt.model, tools=[{"type": "web_search_preview"}], input=self.__history[ctx.guild.id], max_output_tokens=800
-            )
-            self.__logger.info(f"[Response] {str(response.output_text)}")
+
+            # Use Semantic Kernel for web search (note: web search functionality needs to be added as a plugin)
+            # For now, fallback to direct OpenAI API call with web search tool
+            messages = []
+            for msg in self.__chat_histories[ctx.guild.id].messages:
+                messages.append({"role": msg.role.value, "content": str(msg.content)})
+
+            response = openai.responses.create(model=self.config.gpt.model, tools=[{"type": "web_search_preview"}], input=messages, max_output_tokens=800)
+            response_text = str(response.output_text)
+            self.__logger.info(f"[Response] {response_text}")
 
             if self.config.bot.save_api_response is True:
-                self.__history[ctx.guild.id].append({"role": "assistant", "content": str(response.output_text)})
+                self.__chat_histories[ctx.guild.id].add_assistant_message(response_text)
 
             await self.delete_old_history(guild_id=ctx.guild.id)
 
             await self.token_ranking(ctx.guild.id, ctx.author, response.usage.total_tokens)
-            await ctx.send(content=str(response.output_text))
+            await ctx.send(content=response_text)
 
         except Exception as e:
             self.__logger.exception("error occured in seach api processing")
@@ -427,8 +501,8 @@ class BotCog(commands.Cog):
     async def loop_reset(self):
         # 最終アクティビティから60分後に履歴リセット
         if (datetime.datetime.now() - self.__last_activity).total_seconds() > 60 * 60:
-            if len(self.__history.keys()) > 0:
-                for guild_id in self.__history.keys():
+            if len(self.__chat_histories.keys()) > 0:
+                for guild_id in self.__chat_histories.keys():
                     await self.reset_history(guild_id)
 
                 self.__logger.info("cyclic history reset")
@@ -444,8 +518,12 @@ class BotCog(commands.Cog):
         if self.bot.user.id in [member.id for member in message.mentions]:
             try:
                 # 履歴リストの初期化
-                self.__history.setdefault(message.guild.id, copy.deepcopy(self.__init_message))
                 self.__token_ranking.setdefault(message.guild.id, {})
+
+                # Initialize Semantic Kernel chat history if not exists
+                if message.guild.id not in self.__chat_histories:
+                    self.__chat_histories[message.guild.id] = ChatHistory()
+                    self.__chat_histories[message.guild.id].add_system_message(self.config.bot.default_system_promt)
 
                 # リクエスト
                 plane_message, reference_message, attatchments = await self.parse_message(message)
