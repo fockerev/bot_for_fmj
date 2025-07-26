@@ -209,12 +209,12 @@ class GptService:
             self.chat_histories[guild_id].add_user_message(user_message)
 
             chat_completion = self.kernel.get_service("chat-gpt")
-            response = await chat_completion.get_chat_message_contents(
+            response = await chat_completion.get_chat_message_content(
                 chat_history=self.chat_histories[guild_id],
                 settings=OpenAIChatPromptExecutionSettings(max_tokens=self.config.gpt.max_token, temperature=self.config.gpt.temperature),
             )
 
-            response_text = str(response[0].content)
+            response_text = str(response.content)
             # Semantic Kernelのトークン使用量を推定
             total_tokens = self._estimate_token_usage(user_message, response_text)
 
