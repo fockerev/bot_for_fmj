@@ -5,6 +5,7 @@ from typing import Dict, Optional, Tuple
 import openai
 import semantic_kernel as sk
 from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion
+from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.open_ai_prompt_execution_settings import OpenAIChatPromptExecutionSettings
 from semantic_kernel.contents.chat_history import ChatHistory
 
 from .config import AppConfig, ImageReso
@@ -77,11 +78,28 @@ class GptService:
             bool: True if successful, False otherwise
         """
         try:
-            self.chat_histories[guild_id] = ChatHistory()
-            self.chat_histories[guild_id].add_system_message(text)
-            if guild_id in self.chat_histories.keys():
+            if guild_id in self.chat_histories:
+                # Preserve existing chat history, only replace system message
+                messages = self.chat_histories[guild_id].messages
+                non_system_messages = [msg for msg in messages if msg.role.value != "system"]
+                
+                # Create new chat history with new system message
+                new_chat_history = ChatHistory()
+                new_chat_history.add_system_message(text)
+                
+                # Add back all non-system messages
+                for msg in non_system_messages:
+                    if msg.role.value == "user":
+                        new_chat_history.add_user_message(str(msg.content))
+                    elif msg.role.value == "assistant":
+                        new_chat_history.add_assistant_message(str(msg.content))
+                
+                self.chat_histories[guild_id] = new_chat_history
                 self.logger.info(f"system character changed -> {text}")
             else:
+                # Create new chat history for new server
+                self.chat_histories[guild_id] = ChatHistory()
+                self.chat_histories[guild_id].add_system_message(text)
                 self.logger.info(f"character created for new server-> {text}")
         except Exception:
             self.logger.exception("Character setting failed")
@@ -193,7 +211,7 @@ class GptService:
             chat_completion = self.kernel.get_service("chat-gpt")
             response = await chat_completion.get_chat_message_contents(
                 chat_history=self.chat_histories[guild_id],
-                settings=sk.openai.OpenAIChatPromptExecutionSettings(max_tokens=self.config.gpt.max_token, temperature=self.config.gpt.temperature),
+                settings=OpenAIChatPromptExecutionSettings(max_tokens=self.config.gpt.max_token, temperature=self.config.gpt.temperature),
             )
 
             response_text = str(response[0].content)
