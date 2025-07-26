@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Type, TypeVar
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+from urllib.error import URLError, HTTPError
 
 import discord
 import openai
@@ -191,28 +194,73 @@ class BotCog(commands.Cog):
                 reference_message = message.reference.resolved.content
 
         # 添付ファイルの抽出
-        # 対応ファイル形式
-        extention = re.compile(r".png|.jpg|.jpeg|.gif")
+        # 対応ファイル形式の拡張
+        supported_extensions = {
+            '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif', '.svg'
+        }
+        extention = re.compile(r"\.(png|jpe?g|gif|webp|bmp|tiff?|svg)(?:\?[^\s]*)?$", re.IGNORECASE)
         # 直接メッセージに添付
         if 0 < len(message.attachments):
             for attach in message.attachments:
-                if extention.search(attach.url) is not None:
+                if await self._is_valid_image_url(attach.url, extention):
                     attachments_list.append(attach.url)
                 else:
-                    raise ValueError("そのファイル非対応やで")
+                    supported_formats = ', '.join(sorted(supported_extensions))
+                    raise ValueError(f"未対応のファイル形式です。対応形式: {supported_formats}")
 
         # チャットから画像のURLを抽出
         extractor = urlextract.URLExtract()
         extracted_urls = extractor.find_urls(plane_message)
         if len(extracted_urls) > 0:
             for url in extracted_urls:
-                if extention.search(url) is not None:
-                    attachments_list.append(url)
+                if await self._is_valid_image_url(url, extention):
+                    # HTTPSにリダイレクト
+                    secure_url = self._ensure_https(url)
+                    attachments_list.append(secure_url)
                     plane_message = plane_message.replace(url, "")
                 else:
-                    raise ValueError("そのURL非対応やで")
+                    supported_formats = ', '.join(sorted(supported_extensions))
+                    raise ValueError(f"未対応のURL形式またはアクセスできません。対応形式: {supported_formats}")
 
         return plane_message, reference_message, attachments_list
+
+    def _ensure_https(self, url: str) -> str:
+        """URLをHTTPSに変換する"""
+        if url.startswith('http://'):
+            return url.replace('http://', 'https://', 1)
+        return url
+
+    async def _is_valid_image_url(self, url: str, pattern: re.Pattern) -> bool:
+        """画像URLの有効性とアクセス可能性をチェックする"""
+        try:
+            # URL形式の基本チェック
+            parsed = urlparse(url)
+            if not parsed.scheme or not parsed.netloc:
+                return False
+            
+            # 拡張子チェック
+            if not pattern.search(url):
+                return False
+            
+            # HTTPSに変換してアクセス可能性をチェック
+            secure_url = self._ensure_https(url)
+            
+            # HEAD リクエストでアクセス可能性とContent-Typeをチェック
+            request = Request(secure_url)
+            request.add_header('User-Agent', 'Mozilla/5.0 (compatible; DiscordBot)')
+            request.get_method = lambda: 'HEAD'
+            
+            with urlopen(request, timeout=10) as response:
+                content_type = response.headers.get('Content-Type', '').lower()
+                # Content-Typeが画像かチェック
+                if content_type.startswith('image/'):
+                    return True
+                # Content-Typeが不明でも拡張子が画像なら許可
+                return pattern.search(url) is not None
+                
+        except (URLError, HTTPError, Exception) as e:
+            self.__logger.warning(f"URL validation failed for {url}: {e}")
+            return False
 
     async def send_question_gpt(self, question: str, reference: str, attachments: list, guild_id: int) -> tuple[str, int]:
         """Semantic Kernelでリクエストを送信し結果を得る
@@ -288,9 +336,8 @@ class BotCog(commands.Cog):
             )
 
             response_text = str(response[0].content)
-            # Note: Semantic Kernel doesn't directly provide token usage,
-            # so we'll estimate or use a placeholder
-            total_tokens = 0  # You may need to implement token counting separately
+            # Semantic Kernelのトークン使用量を推定
+            total_tokens = self._estimate_token_usage(user_message, response_text)
 
             # Add assistant response to chat history
             self.__chat_histories[guild_id].add_assistant_message(response_text)
@@ -302,6 +349,13 @@ class BotCog(commands.Cog):
         self.__last_activity = datetime.datetime.now()
 
         return response_text, total_tokens
+    
+    def _estimate_token_usage(self, input_text: str, output_text: str) -> int:
+        """テキストベースのトークン使用量を推定（簡易版）"""
+        # 簡易的な推定: 英語では約4文字=1トークン、日本語では約1.5文字=1トークン
+        input_tokens = len(input_text) // 3  # 混在を想定した平均値
+        output_tokens = len(output_text) // 3
+        return input_tokens + output_tokens
 
     async def token_ranking(self, guild_id: int, author: discord.Member, usage: int):
         if isinstance(self.__token_ranking[guild_id], dict) is False:
