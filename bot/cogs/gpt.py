@@ -7,11 +7,10 @@ from pathlib import Path
 import discord
 import openai
 from discord.ext import commands, tasks
-
-from ..modules.config import AppConfig
-from ..modules.gpt_service import GptService
-from ..modules.message_parser import MessageParser
-from ..modules.commands import BotCommands
+from modules.commands import BotCommands
+from modules.config import AppConfig
+from modules.gpt_service import GptService
+from modules.message_parser import MessageParser
 
 VERSION = "20250527_2100"
 
@@ -20,18 +19,18 @@ class BotCog(commands.Cog):
     def __init__(self, bot) -> None:
         # Initialize logger
         self._setup_logger()
-        
+
         self.bot = bot
         self.config = self._load_config()
-        
+
         # Initialize services
         self.gpt_service = GptService(self.config, self.logger)
         self.message_parser = MessageParser(self.logger)
-        
+
         # Initialize commands
         self.bot_commands = BotCommands(self.bot, self.gpt_service, self.config)
         self.bot_commands.register_commands()
-    
+
     def _setup_logger(self) -> None:
         """Setup logger configuration"""
         try:
@@ -44,7 +43,7 @@ class BotCog(commands.Cog):
             logging.basicConfig(level=logging.INFO)
             self.logger = logging.getLogger("gpt")
             self.logger.error(f"Failed to load logging config: {e}")
-    
+
     def _load_config(self) -> AppConfig:
         """Load application configuration"""
         try:
@@ -52,7 +51,6 @@ class BotCog(commands.Cog):
         except Exception as e:
             self.logger.error(f"Failed to load config: {e}")
             raise
-
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -76,12 +74,7 @@ class BotCog(commands.Cog):
             for msg in self.gpt_service.chat_histories[ctx.guild.id].messages:
                 messages.append({"role": msg.role.value, "content": str(msg.content)})
 
-            response = openai.responses.create(
-                model=self.config.gpt.model, 
-                tools=[{"type": "web_search_preview"}], 
-                input=messages, 
-                max_output_tokens=800
-            )
+            response = openai.responses.create(model=self.config.gpt.model, tools=[{"type": "web_search_preview"}], input=messages, max_output_tokens=800)
             response_text = str(response.output_text)
             self.logger.info(f"[Response] {response_text}")
 
@@ -90,7 +83,7 @@ class BotCog(commands.Cog):
 
             self.gpt_service.delete_old_history(guild_id=ctx.guild.id)
             self.gpt_service.update_token_ranking(ctx.guild.id, ctx.author.id, response.usage.total_tokens)
-            
+
             await ctx.send(content=response_text)
 
         except Exception as e:
@@ -105,7 +98,7 @@ class BotCog(commands.Cog):
                 if len(self.gpt_service.chat_histories) > 0:
                     for guild_id in list(self.gpt_service.chat_histories.keys()):
                         self.gpt_service.reset_history(guild_id)
-                    
+
                     self.logger.info("cyclic history reset")
                     self.gpt_service.last_activity = datetime.datetime.now()
         except Exception as e:
@@ -126,9 +119,7 @@ class BotCog(commands.Cog):
 
                 # Parse message and get GPT response
                 plane_message, reference_message, attachments = await self.message_parser.parse_message(message)
-                response, usage = await self.gpt_service.send_question_gpt(
-                    plane_message, reference_message, attachments, message.guild.id
-                )
+                response, usage = await self.gpt_service.send_question_gpt(plane_message, reference_message, attachments, message.guild.id)
 
                 # Update tracking and send response
                 self.gpt_service.update_token_ranking(message.guild.id, message.author.id, usage)
