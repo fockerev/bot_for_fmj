@@ -33,6 +33,19 @@ class GptService:
             self.chat_histories[guild_id] = ChatHistory()
             self.chat_histories[guild_id].add_system_message(self.config.bot.default_system_promt)
 
+    def _create_new_history_with_system_message(self, system_message: str) -> ChatHistory:
+        """Create new chat history with system message
+        
+        Args:
+            system_message: System message text
+            
+        Returns:
+            ChatHistory: New chat history instance
+        """
+        history = ChatHistory()
+        history.add_system_message(system_message)
+        return history
+
     def reset_history(self, guild_id: int) -> bool:
         """Reset chat history for a guild
         
@@ -43,12 +56,10 @@ class GptService:
             bool: True if successful, False otherwise
         """
         if guild_id in self.chat_histories:
-            self.chat_histories[guild_id] = ChatHistory()
-            self.chat_histories[guild_id].add_system_message(self.config.bot.default_system_promt)
+            self.chat_histories[guild_id] = self._create_new_history_with_system_message(self.config.bot.default_system_promt)
             self.logger.info("history reset")
             return True
-        else:
-            return False
+        return False
 
     def reset_character(self, guild_id: int) -> bool:
         """Reset system character for a guild
@@ -59,13 +70,11 @@ class GptService:
         Returns:
             bool: True if successful, False otherwise
         """
-        if guild_id in self.chat_histories.keys():
-            self.chat_histories[guild_id] = ChatHistory()
-            self.chat_histories[guild_id].add_system_message(self.config.bot.default_system_promt)
+        if guild_id in self.chat_histories:
+            self.chat_histories[guild_id] = self._create_new_history_with_system_message(self.config.bot.default_system_promt)
             self.logger.info("system character reset")
             return True
-        else:
-            return False
+        return False
 
     def change_character(self, guild_id: int, text: str) -> bool:
         """Change system character setting for GPT
@@ -88,18 +97,13 @@ class GptService:
                 new_chat_history.add_system_message(text)
                 
                 # Add back all non-system messages
-                for msg in non_system_messages:
-                    if msg.role.value == "user":
-                        new_chat_history.add_user_message(str(msg.content))
-                    elif msg.role.value == "assistant":
-                        new_chat_history.add_assistant_message(str(msg.content))
+                self._add_messages_to_history(new_chat_history, non_system_messages)
                 
                 self.chat_histories[guild_id] = new_chat_history
                 self.logger.info(f"system character changed -> {text}")
             else:
                 # Create new chat history for new server
-                self.chat_histories[guild_id] = ChatHistory()
-                self.chat_histories[guild_id].add_system_message(text)
+                self.chat_histories[guild_id] = self._create_new_history_with_system_message(text)
                 self.logger.info(f"character created for new server-> {text}")
         except Exception:
             self.logger.exception("Character setting failed")
@@ -135,14 +139,7 @@ class GptService:
                 other_messages = other_messages[-(self.config.bot.history_size - len(system_messages)) :]
 
             # Reconstruct chat history
-            new_chat_history = ChatHistory()
-            for msg in system_messages:
-                new_chat_history.add_system_message(str(msg.content))
-            for msg in other_messages:
-                if msg.role.value == "user":
-                    new_chat_history.add_user_message(str(msg.content))
-                elif msg.role.value == "assistant":
-                    new_chat_history.add_assistant_message(str(msg.content))
+            new_chat_history = self._reconstruct_chat_history(system_messages + other_messages)
 
             self.chat_histories[guild_id] = new_chat_history
 
@@ -169,61 +166,75 @@ class GptService:
             user_message += f"\n## 以下へ言及\n{reference}"
             self.logger.info(f"[Reference] {reference}")
 
+        # Add user message to chat history
+        self.chat_histories[guild_id].add_user_message(user_message)
+
         # Handle image attachments (fallback to OpenAI direct call for vision)
         if len(attachments) > 0:
-            self.logger.info(f"[Attachments] {attachments}")
-            
-            if self.config.gpt.image_resolution == ImageReso.LOW:
-                reso = "low"
-            else:
-                reso = "high"
-
-            image_input = []
-            for url in attachments:
-                image_input.append({"type": "image_url", "image_url": {"url": url, "detail": reso}})
-
-            # Convert chat history to OpenAI format for vision
-            messages = []
-            for msg in self.chat_histories[guild_id].messages:
-                messages.append({"role": msg.role.value, "content": str(msg.content)})
-
-            # Add user message with images to both histories
-            self.chat_histories[guild_id].add_user_message(user_message)
-
-            # Add current message with images
-            messages.append({"role": "user", "content": [{"type": "text", "text": user_message}] + image_input})
-
-            response = openai.chat.completions.create(
-                model=self.config.gpt.model,
-                messages=messages,
-                max_tokens=self.config.gpt.max_token,
-                temperature=self.config.gpt.temperature,
-            )
-            response_text = str(response.choices[0].message.content)
-            total_tokens = response.usage.total_tokens
-
-            # Add assistant response to chat history
-            self.chat_histories[guild_id].add_assistant_message(response_text)
+            response_text, total_tokens = await self._handle_image_request(guild_id, user_message, attachments)
         else:
             # Use Semantic Kernel for text-only conversations
-            self.chat_histories[guild_id].add_user_message(user_message)
+            response_text, total_tokens = await self._handle_text_request(guild_id, user_message)
 
-            chat_completion = self.kernel.get_service("chat-gpt")
-            response = await chat_completion.get_chat_message_content(
-                chat_history=self.chat_histories[guild_id],
-                settings=OpenAIChatPromptExecutionSettings(max_tokens=self.config.gpt.max_token, temperature=self.config.gpt.temperature),
-            )
-
-            response_text = str(response.content)
-            # Semantic Kernelのトークン使用量を推定
-            total_tokens = self._estimate_token_usage(user_message, response_text)
-
-            # Add assistant response to chat history
-            self.chat_histories[guild_id].add_assistant_message(response_text)
+        # Add assistant response to chat history
+        self.chat_histories[guild_id].add_assistant_message(response_text)
 
         self.logger.info(f"[Response] {response_text}")
         self.last_activity = datetime.datetime.now()
 
+        return response_text, total_tokens
+
+    async def _handle_image_request(self, guild_id: int, user_message: str, attachments: list) -> Tuple[str, int]:
+        """Handle request with image attachments using OpenAI direct API
+        
+        Args:
+            guild_id: Discord guild ID
+            user_message: User message text
+            attachments: List of attachment URLs
+            
+        Returns:
+            Tuple[str, int]: Response text and token usage
+        """
+        self.logger.info(f"[Attachments] {attachments}")
+        
+        reso = "low" if self.config.gpt.image_resolution == ImageReso.LOW else "high"
+        
+        image_input = [{"type": "image_url", "image_url": {"url": url, "detail": reso}} for url in attachments]
+        
+        # Convert chat history to OpenAI format for vision
+        messages = [{"role": msg.role.value, "content": str(msg.content)} for msg in self.chat_histories[guild_id].messages]
+        
+        # Add current message with images
+        messages.append({"role": "user", "content": [{"type": "text", "text": user_message}] + image_input})
+        
+        response = openai.chat.completions.create(
+            model=self.config.gpt.model,
+            messages=messages,
+            max_tokens=self.config.gpt.max_token,
+            temperature=self.config.gpt.temperature,
+        )
+        
+        return str(response.choices[0].message.content), response.usage.total_tokens
+
+    async def _handle_text_request(self, guild_id: int, user_message: str) -> Tuple[str, int]:
+        """Handle text-only request using Semantic Kernel
+        
+        Args:
+            guild_id: Discord guild ID
+            user_message: User message text
+            
+        Returns:
+            Tuple[str, int]: Response text and token usage
+        """
+        chat_completion = self.kernel.get_service("chat-gpt")
+        response = await chat_completion.get_chat_message_content(
+            chat_history=self.chat_histories[guild_id],
+            settings=OpenAIChatPromptExecutionSettings(max_tokens=self.config.gpt.max_token, temperature=self.config.gpt.temperature),
+        )
+        
+        response_text = str(response.content)
+        total_tokens = self._estimate_token_usage(user_message, response_text)
+        
         return response_text, total_tokens
     
     def _estimate_token_usage(self, input_text: str, output_text: str) -> int:
@@ -292,3 +303,31 @@ class GptService:
             bool: True if history should be reset (after 60 minutes of inactivity)
         """
         return (datetime.datetime.now() - self.last_activity).total_seconds() > 60 * 60
+
+    def _reconstruct_chat_history(self, messages) -> ChatHistory:
+        """Reconstruct chat history from message list
+        
+        Args:
+            messages: List of messages to add
+            
+        Returns:
+            ChatHistory: Reconstructed chat history
+        """
+        new_chat_history = ChatHistory()
+        self._add_messages_to_history(new_chat_history, messages)
+        return new_chat_history
+
+    def _add_messages_to_history(self, chat_history: ChatHistory, messages) -> None:
+        """Add messages to chat history based on their role
+        
+        Args:
+            chat_history: Chat history to add messages to
+            messages: List of messages to add
+        """
+        for msg in messages:
+            if msg.role.value == "system":
+                chat_history.add_system_message(str(msg.content))
+            elif msg.role.value == "user":
+                chat_history.add_user_message(str(msg.content))
+            elif msg.role.value == "assistant":
+                chat_history.add_assistant_message(str(msg.content))
