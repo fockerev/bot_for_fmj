@@ -2,11 +2,14 @@ import datetime
 import json
 import logging
 import logging.config
+import sys
 from pathlib import Path
 
 import discord
 import openai
 from discord.ext import commands, tasks
+sys.path.append(str(Path(__file__).parent.parent))
+
 from modules.commands import BotCommands
 from modules.config import AppConfig
 from modules.gpt_service import GptService

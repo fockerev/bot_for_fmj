@@ -1,31 +1,50 @@
 import datetime
 import logging
+import sys
+from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import openai
-import semantic_kernel as sk
-from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion
-from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.open_ai_prompt_execution_settings import OpenAIChatPromptExecutionSettings
 from semantic_kernel.contents.chat_history import ChatHistory
 
-from .config import AppConfig, ImageReso
+# Add current directory to sys.path for absolute imports
+sys.path.append(str(Path(__file__).parent))
+
+from ai_service import AIServiceFactory
+from config import AppConfig, ImageReso
 
 
 class GptService:
     """GPT interaction service handling chat histories and token management"""
-    
+
     def __init__(self, config: AppConfig, logger: logging.Logger):
         self.config = config
         self.logger = logger
+        self._initialize_ai_service()
         
-        # Initialize Semantic Kernel
-        self.kernel = sk.Kernel()
-        chat_completion = OpenAIChatCompletion(ai_model_id=self.config.gpt.model, service_id="chat-gpt")
-        self.kernel.add_service(chat_completion)
-
         self.chat_histories: Dict[int, ChatHistory] = {}
         self.token_ranking: Dict[int, Dict[int, int]] = {}
         self.last_activity: datetime.datetime = datetime.datetime.now()
+
+    def _initialize_ai_service(self):
+        """Initialize AI service using factory"""
+        try:
+            self.ai_service = AIServiceFactory.create_service(self.config)
+            if not self.ai_service:
+                self.logger.error("Failed to initialize AI service - factory returned None")
+                raise RuntimeError("AI service initialization failed - factory returned None")
+            
+            self.logger.info(f"Initialized GPT service with provider: {self.config.gpt.ai_provider.value}")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize AI service: {e}")
+            # Fallback to None - service will still work for image processing
+            self.ai_service = None
+            self.logger.warning("AI service disabled - text-only features will not work")
+
+    def reinitialize_ai_service(self):
+        """Reinitialize AI service after configuration changes"""
+        self.logger.info("Reinitializing AI service due to configuration change")
+        self._initialize_ai_service()
 
     def initialize_chat_history(self, guild_id: int) -> None:
         """Initialize chat history for a guild if not exists"""
@@ -35,10 +54,10 @@ class GptService:
 
     def _create_new_history_with_system_message(self, system_message: str) -> ChatHistory:
         """Create new chat history with system message
-        
+
         Args:
             system_message: System message text
-            
+
         Returns:
             ChatHistory: New chat history instance
         """
@@ -48,10 +67,10 @@ class GptService:
 
     def reset_history(self, guild_id: int) -> bool:
         """Reset chat history for a guild
-        
+
         Args:
             guild_id: Discord guild ID
-            
+
         Returns:
             bool: True if successful, False otherwise
         """
@@ -63,10 +82,10 @@ class GptService:
 
     def reset_character(self, guild_id: int) -> bool:
         """Reset system character for a guild
-        
+
         Args:
             guild_id: Discord guild ID
-            
+
         Returns:
             bool: True if successful, False otherwise
         """
@@ -78,11 +97,11 @@ class GptService:
 
     def change_character(self, guild_id: int, text: str) -> bool:
         """Change system character setting for GPT
-        
+
         Args:
             guild_id: Discord guild ID
             text: New character setting text
-            
+
         Returns:
             bool: True if successful, False otherwise
         """
@@ -91,14 +110,14 @@ class GptService:
                 # Preserve existing chat history, only replace system message
                 messages = self.chat_histories[guild_id].messages
                 non_system_messages = [msg for msg in messages if msg.role.value != "system"]
-                
+
                 # Create new chat history with new system message
                 new_chat_history = ChatHistory()
                 new_chat_history.add_system_message(text)
-                
+
                 # Add back all non-system messages
                 self._add_messages_to_history(new_chat_history, non_system_messages)
-                
+
                 self.chat_histories[guild_id] = new_chat_history
                 self.logger.info(f"system character changed -> {text}")
             else:
@@ -112,10 +131,10 @@ class GptService:
 
     def check_history_size(self, guild_id: int) -> int:
         """Check chat history size for a guild
-        
+
         Args:
             guild_id: Discord guild ID
-            
+
         Returns:
             int: Number of messages in history
         """
@@ -125,7 +144,7 @@ class GptService:
 
     def delete_old_history(self, guild_id: int) -> None:
         """Delete oldest history entries when limit is exceeded
-        
+
         Args:
             guild_id: Discord guild ID
         """
@@ -145,13 +164,13 @@ class GptService:
 
     async def send_question_gpt(self, question: str, reference: Optional[str], attachments: list, guild_id: int) -> Tuple[str, int]:
         """Send question to GPT using Semantic Kernel and get response
-        
+
         Args:
             question: User question text
             reference: Referenced message text (optional)
             attachments: List of attachment URLs
             guild_id: Discord guild ID
-            
+
         Returns:
             Tuple[str, int]: Response text and token usage count
         """
@@ -186,64 +205,66 @@ class GptService:
 
     async def _handle_image_request(self, guild_id: int, user_message: str, attachments: list) -> Tuple[str, int]:
         """Handle request with image attachments using OpenAI direct API
-        
+
         Args:
             guild_id: Discord guild ID
             user_message: User message text
             attachments: List of attachment URLs
-            
+
         Returns:
             Tuple[str, int]: Response text and token usage
         """
         self.logger.info(f"[Attachments] {attachments}")
-        
+
         reso = "low" if self.config.gpt.image_resolution == ImageReso.LOW else "high"
-        
+
         image_input = [{"type": "image_url", "image_url": {"url": url, "detail": reso}} for url in attachments]
-        
+
         # Convert chat history to OpenAI format for vision
         messages = [{"role": msg.role.value, "content": str(msg.content)} for msg in self.chat_histories[guild_id].messages]
-        
+
         # Add current message with images
         messages.append({"role": "user", "content": [{"type": "text", "text": user_message}] + image_input})
-        
+
         response = openai.chat.completions.create(
-            model=self.config.gpt.model,
+            model=self.config.gpt.openai_model,  # Always use OpenAI model for image processing
             messages=messages,
             max_tokens=self.config.gpt.max_token,
             temperature=self.config.gpt.temperature,
         )
-        
+
         return str(response.choices[0].message.content), response.usage.total_tokens
 
     async def _handle_text_request(self, guild_id: int, user_message: str) -> Tuple[str, int]:
-        """Handle text-only request using Semantic Kernel
-        
+        """Handle text-only request using AI service
+
         Args:
             guild_id: Discord guild ID
             user_message: User message text
-            
+
         Returns:
             Tuple[str, int]: Response text and token usage
         """
-        chat_completion = self.kernel.get_service("chat-gpt")
-        response = await chat_completion.get_chat_message_content(
-            chat_history=self.chat_histories[guild_id],
-            settings=OpenAIChatPromptExecutionSettings(max_tokens=self.config.gpt.max_token, temperature=self.config.gpt.temperature),
-        )
+        if not self.ai_service:
+            error_msg = "AI サービスが初期化されていません。APIキーを確認してください。"
+            self.logger.error("AI service not available for text request")
+            return error_msg, 0
         
-        response_text = str(response.content)
+        settings = {"max_tokens": self.config.gpt.max_token, "temperature": self.config.gpt.temperature}
+
+        response_text = await self.ai_service.get_chat_response(self.chat_histories[guild_id], settings)
+
         total_tokens = self._estimate_token_usage(user_message, response_text)
-        
+
         return response_text, total_tokens
-    
+
     def _estimate_token_usage(self, input_text: str, output_text: str) -> int:
         """Estimate token usage for text-based interactions (simplified version)
-        
+
         Args:
             input_text: Input text
             output_text: Output text
-            
+
         Returns:
             int: Estimated token count
         """
@@ -254,7 +275,7 @@ class GptService:
 
     def update_token_ranking(self, guild_id: int, author_id: int, usage: int) -> None:
         """Update token usage ranking for a user
-        
+
         Args:
             guild_id: Discord guild ID
             author_id: Discord user ID
@@ -270,10 +291,10 @@ class GptService:
 
     def get_token_ranking(self, guild_id: int) -> Dict[int, int]:
         """Get token usage ranking for a guild
-        
+
         Args:
             guild_id: Discord guild ID
-            
+
         Returns:
             Dict[int, int]: Ranking dictionary (user_id -> token_count) sorted by usage
         """
@@ -283,10 +304,10 @@ class GptService:
 
     def get_system_prompt(self, guild_id: int) -> str:
         """Get current system prompt for a guild
-        
+
         Args:
             guild_id: Discord guild ID
-            
+
         Returns:
             str: System prompt text, empty string if not found
         """
@@ -298,7 +319,7 @@ class GptService:
 
     def should_reset_history(self) -> bool:
         """Check if history should be reset based on inactivity
-        
+
         Returns:
             bool: True if history should be reset (after 60 minutes of inactivity)
         """
@@ -306,10 +327,10 @@ class GptService:
 
     def _reconstruct_chat_history(self, messages) -> ChatHistory:
         """Reconstruct chat history from message list
-        
+
         Args:
             messages: List of messages to add
-            
+
         Returns:
             ChatHistory: Reconstructed chat history
         """
@@ -319,7 +340,7 @@ class GptService:
 
     def _add_messages_to_history(self, chat_history: ChatHistory, messages) -> None:
         """Add messages to chat history based on their role
-        
+
         Args:
             chat_history: Chat history to add messages to
             messages: List of messages to add

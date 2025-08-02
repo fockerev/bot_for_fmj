@@ -1,8 +1,15 @@
 gpt:
-  model: "gpt-4.1"
+  openai_model: "gpt-4.1"  # Set model based on provider
+  gemini_model: "gemini-2.5-flash-lite"
   max_token: 1600  # 最大トークン数
   temperature: 1.0
   image_resolution: 0 # 0:LOW 1:HIGH
+  ai_provider: "openai" # "openai" or "gemini"
+
+riot_api:
+  max_tokens_basic: 1200  # 基本レビュー用トークン数
+  max_tokens_detailed: 2500  # 詳細レビュー用トークン数
+  system_message: "あなたはLeague of Legendsの経験豊富なプロコーチです。試合データを詳細に分析し、序盤・中盤・終盤の動きを評価して、具体的で実践的なアドバイスを提供してください。"
 
 bot:
   save_api_response: True #APIの応答を履歴に追加するか

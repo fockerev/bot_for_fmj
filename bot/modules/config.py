@@ -12,6 +12,11 @@ class ImageReso(Enum):
     HIGH = 1
 
 
+class AIProvider(Enum):
+    OPENAI = "openai"
+    GEMINI = "gemini"
+
+
 T = TypeVar("T", bound="YamlConfig")
 
 
@@ -40,10 +45,19 @@ class YamlConfig:
 
 @dataclass
 class GptConfig(YamlConfig):
-    model: str
+    openai_model: str
+    gemini_model: str
     max_token: int
     temperature: float
     image_resolution: ImageReso
+    ai_provider: AIProvider
+
+
+@dataclass
+class RiotApiConfig(YamlConfig):
+    max_tokens_basic: int
+    max_tokens_detailed: int
+    system_message: str
 
 
 @dataclass
@@ -57,4 +71,5 @@ class BotConfig(YamlConfig):
 @dataclass
 class AppConfig(YamlConfig):
     gpt: GptConfig
+    riot_api: RiotApiConfig
     bot: BotConfig
