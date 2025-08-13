@@ -10,8 +10,9 @@ from semantic_kernel.contents.chat_history import ChatHistory
 # Add current directory to sys.path for absolute imports
 sys.path.append(str(Path(__file__).parent))
 
-from ai_service import AIServiceFactory
-from config import AppConfig, ImageReso
+from ai_service import AIServiceFactory, AIServiceInterface
+from config import AppConfig, ImageReso, AIProvider
+from guild_config import GuildConfigManager, EffectiveGuildConfig
 
 
 class GptService:
@@ -20,6 +21,14 @@ class GptService:
     def __init__(self, config: AppConfig, logger: logging.Logger):
         self.config = config
         self.logger = logger
+        
+        # Initialize guild configuration manager
+        self.guild_config_manager = GuildConfigManager(config)
+        
+        # Guild-specific AI services
+        self.ai_services: Dict[int, AIServiceInterface] = {}
+        
+        # Legacy global AI service for compatibility
         self._initialize_ai_service()
         
         self.chat_histories: Dict[int, ChatHistory] = {}
@@ -45,12 +54,70 @@ class GptService:
         """Reinitialize AI service after configuration changes"""
         self.logger.info("Reinitializing AI service due to configuration change")
         self._initialize_ai_service()
+    
+    def _get_ai_service(self, guild_id: int) -> AIServiceInterface:
+        """Get or create AI service for a specific guild"""
+        try:
+            if guild_id not in self.ai_services:
+                # Create AI service using guild-specific configuration
+                effective_config = self.guild_config_manager.get_effective_config(guild_id)
+                
+                # Create a temporary AppConfig object with effective settings for the factory
+                temp_config = AppConfig(
+                    gpt=type(self.config.gpt)(
+                        openai_model=effective_config.openai_model,
+                        gemini_model=effective_config.gemini_model,
+                        max_token=effective_config.max_token,
+                        temperature=effective_config.temperature,
+                        image_resolution=type(self.config.gpt.image_resolution)(effective_config.image_resolution),
+                        ai_provider=effective_config.ai_provider
+                    ),
+                    riot_api=self.config.riot_api,
+                    bot=self.config.bot
+                )
+                
+                self.ai_services[guild_id] = AIServiceFactory.create_service(temp_config)
+                
+                if not self.ai_services[guild_id]:
+                    self.logger.error(f"Failed to create AI service for guild {guild_id}")
+                    raise RuntimeError(f"AI service creation failed for guild {guild_id}")
+                
+                self.logger.info(f"Created AI service for guild {guild_id} with provider: {effective_config.ai_provider.value}")
+            
+            return self.ai_services[guild_id]
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get AI service for guild {guild_id}: {e}")
+            # Fallback to global service if guild-specific fails
+            if self.ai_service:
+                self.logger.warning(f"Falling back to global AI service for guild {guild_id}")
+                return self.ai_service
+            else:
+                raise RuntimeError(f"No AI service available for guild {guild_id}")
+    
+    def reinitialize_guild_ai_service(self, guild_id: int):
+        """Reinitialize AI service for a specific guild after configuration changes"""
+        try:
+            if guild_id in self.ai_services:
+                del self.ai_services[guild_id]
+                self.logger.info(f"Removed cached AI service for guild {guild_id}")
+            
+            # The service will be recreated on next access
+            self.logger.info(f"Guild {guild_id} AI service will be recreated on next use")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to reinitialize AI service for guild {guild_id}: {e}")
 
     def initialize_chat_history(self, guild_id: int) -> None:
         """Initialize chat history for a guild if not exists"""
         if guild_id not in self.chat_histories:
+            effective_config = self.guild_config_manager.get_effective_config(guild_id)
+            system_prompt = effective_config.custom_system_prompt or effective_config.default_system_prompt
+            
             self.chat_histories[guild_id] = ChatHistory()
-            self.chat_histories[guild_id].add_system_message(self.config.bot.default_system_promt)
+            self.chat_histories[guild_id].add_system_message(system_prompt)
+            
+            self.logger.info(f"Initialized chat history for guild {guild_id} with {'custom' if effective_config.custom_system_prompt else 'default'} system prompt")
 
     def _create_new_history_with_system_message(self, system_message: str) -> ChatHistory:
         """Create new chat history with system message
@@ -66,7 +133,7 @@ class GptService:
         return history
 
     def reset_history(self, guild_id: int) -> bool:
-        """Reset chat history for a guild
+        """Reset chat history for a guild while preserving system prompt settings
 
         Args:
             guild_id: Discord guild ID
@@ -75,13 +142,20 @@ class GptService:
             bool: True if successful, False otherwise
         """
         if guild_id in self.chat_histories:
-            self.chat_histories[guild_id] = self._create_new_history_with_system_message(self.config.bot.default_system_promt)
-            self.logger.info("history reset")
+            # Get current system prompt (preserve custom settings)
+            current_system_prompt = self.get_system_prompt(guild_id)
+            if not current_system_prompt:
+                # No existing system prompt, use effective config
+                effective_config = self.guild_config_manager.get_effective_config(guild_id)
+                current_system_prompt = effective_config.custom_system_prompt or effective_config.default_system_prompt
+            
+            self.chat_histories[guild_id] = self._create_new_history_with_system_message(current_system_prompt)
+            self.logger.info(f"History reset for guild {guild_id} with preserved system prompt")
             return True
         return False
 
     def reset_character(self, guild_id: int) -> bool:
-        """Reset system character for a guild
+        """Reset system character for a guild to default (removes custom prompt)
 
         Args:
             guild_id: Discord guild ID
@@ -89,11 +163,31 @@ class GptService:
         Returns:
             bool: True if successful, False otherwise
         """
-        if guild_id in self.chat_histories:
-            self.chat_histories[guild_id] = self._create_new_history_with_system_message(self.config.bot.default_system_promt)
-            self.logger.info("system character reset")
+        try:
+            # Clear custom system prompt setting
+            success = self.guild_config_manager.update_guild_config(guild_id, custom_system_prompt=None)
+            if not success:
+                self.logger.error(f"Failed to clear custom system prompt for guild {guild_id}")
+                return False
+            
+            # Get default system prompt after clearing custom setting
+            effective_config = self.guild_config_manager.get_effective_config(guild_id)
+            default_prompt = effective_config.default_system_prompt
+            
+            if guild_id in self.chat_histories:
+                # Recreate history with default system prompt
+                self.chat_histories[guild_id] = self._create_new_history_with_system_message(default_prompt)
+                self.logger.info(f"System character reset to default for guild {guild_id}")
+            else:
+                # Initialize new history for guild if it doesn't exist
+                self.initialize_chat_history(guild_id)
+                self.logger.info(f"Initialized default system character for new guild {guild_id}")
+            
             return True
-        return False
+            
+        except Exception as e:
+            self.logger.error(f"Failed to reset system character for guild {guild_id}: {e}")
+            return False
 
     def change_character(self, guild_id: int, text: str) -> bool:
         """Change system character setting for GPT
@@ -106,6 +200,9 @@ class GptService:
             bool: True if successful, False otherwise
         """
         try:
+            # Save custom system prompt to guild config
+            self.guild_config_manager.update_guild_config(guild_id, custom_system_prompt=text)
+            
             if guild_id in self.chat_histories:
                 # Preserve existing chat history, only replace system message
                 messages = self.chat_histories[guild_id].messages
@@ -119,13 +216,13 @@ class GptService:
                 self._add_messages_to_history(new_chat_history, non_system_messages)
 
                 self.chat_histories[guild_id] = new_chat_history
-                self.logger.info(f"system character changed -> {text}")
+                self.logger.info(f"System character changed for guild {guild_id}: {text[:50]}...")
             else:
                 # Create new chat history for new server
                 self.chat_histories[guild_id] = self._create_new_history_with_system_message(text)
-                self.logger.info(f"character created for new server-> {text}")
+                self.logger.info(f"Character created for new guild {guild_id}: {text[:50]}...")
         except Exception:
-            self.logger.exception("Character setting failed")
+            self.logger.exception(f"Character setting failed for guild {guild_id}")
             return False
         return True
 
@@ -236,7 +333,7 @@ class GptService:
         return str(response.choices[0].message.content), response.usage.total_tokens
 
     async def _handle_text_request(self, guild_id: int, user_message: str) -> Tuple[str, int]:
-        """Handle text-only request using AI service
+        """Handle text-only request using guild-specific AI service
 
         Args:
             guild_id: Discord guild ID
@@ -245,18 +342,24 @@ class GptService:
         Returns:
             Tuple[str, int]: Response text and token usage
         """
-        if not self.ai_service:
-            error_msg = "AI サービスが初期化されていません。APIキーを確認してください。"
-            self.logger.error("AI service not available for text request")
+        try:
+            ai_service = self._get_ai_service(guild_id)
+            effective_config = self.guild_config_manager.get_effective_config(guild_id)
+            
+            settings = {
+                "max_tokens": effective_config.max_token, 
+                "temperature": effective_config.temperature
+            }
+
+            response_text = await ai_service.get_chat_response(self.chat_histories[guild_id], settings)
+            total_tokens = self._estimate_token_usage(user_message, response_text)
+
+            return response_text, total_tokens
+            
+        except Exception as e:
+            error_msg = f"AI サービスエラー: {str(e)}"
+            self.logger.error(f"AI service error for guild {guild_id}: {e}")
             return error_msg, 0
-        
-        settings = {"max_tokens": self.config.gpt.max_token, "temperature": self.config.gpt.temperature}
-
-        response_text = await self.ai_service.get_chat_response(self.chat_histories[guild_id], settings)
-
-        total_tokens = self._estimate_token_usage(user_message, response_text)
-
-        return response_text, total_tokens
 
     def _estimate_token_usage(self, input_text: str, output_text: str) -> int:
         """Estimate token usage for text-based interactions (simplified version)
@@ -352,3 +455,50 @@ class GptService:
                 chat_history.add_user_message(str(msg.content))
             elif msg.role.value == "assistant":
                 chat_history.add_assistant_message(str(msg.content))
+    
+    # Guild configuration management methods
+    def update_guild_ai_provider(self, guild_id: int, provider: AIProvider) -> bool:
+        """Update AI provider for a specific guild"""
+        try:
+            result = self.guild_config_manager.update_guild_config(guild_id, ai_provider=provider)
+            if result:
+                # Reinitialize AI service for this guild
+                self.reinitialize_guild_ai_service(guild_id)
+            return result
+        except Exception as e:
+            self.logger.error(f"Failed to update AI provider for guild {guild_id}: {e}")
+            return False
+    
+    def update_guild_model(self, guild_id: int, openai_model: str = None, gemini_model: str = None) -> bool:
+        """Update AI model for a specific guild"""
+        try:
+            kwargs = {}
+            if openai_model is not None:
+                kwargs['openai_model'] = openai_model
+            if gemini_model is not None:
+                kwargs['gemini_model'] = gemini_model
+                
+            result = self.guild_config_manager.update_guild_config(guild_id, **kwargs)
+            if result:
+                # Reinitialize AI service for this guild
+                self.reinitialize_guild_ai_service(guild_id)
+            return result
+        except Exception as e:
+            self.logger.error(f"Failed to update model for guild {guild_id}: {e}")
+            return False
+    
+    def get_guild_effective_config(self, guild_id: int) -> EffectiveGuildConfig:
+        """Get effective configuration for a guild"""
+        return self.guild_config_manager.get_effective_config(guild_id)
+    
+    def reset_guild_config(self, guild_id: int, preserve_system_prompt: bool = False) -> bool:
+        """Reset guild configuration to defaults"""
+        try:
+            result = self.guild_config_manager.reset_guild_config(guild_id, preserve_system_prompt)
+            if result:
+                # Reinitialize AI service for this guild
+                self.reinitialize_guild_ai_service(guild_id)
+            return result
+        except Exception as e:
+            self.logger.error(f"Failed to reset guild config for {guild_id}: {e}")
+            return False

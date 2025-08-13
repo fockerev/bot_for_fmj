@@ -12,13 +12,15 @@ from gpt_service import GptService
 
 
 class ConfigView(discord.ui.View):
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, guild_id: int, gpt_service=None):
         super().__init__(timeout=300)
         self.config = config
+        self.guild_id = guild_id
+        self.gpt_service = gpt_service
         self.message = None
 
-        self.add_item(AIProviderSelect(config))
-        self.add_item(ModelSelect(config))
+        self.add_item(AIProviderSelect(config, guild_id, gpt_service))
+        self.add_item(ModelSelect(config, guild_id, gpt_service))
         self.add_item(ImageResolutionSelect(config))
         self.add_item(BooleanSettingsSelect(config))
         self.add_item(NumberSettingsButton(config))
@@ -34,12 +36,21 @@ class ConfigView(discord.ui.View):
 
 
 class AIProviderSelect(discord.ui.Select):
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, guild_id: int, gpt_service=None):
         self.config = config
+        self.guild_id = guild_id
+        self.gpt_service = gpt_service
+        # Get effective guild configuration for current selection
+        if gpt_service:
+            effective_config = gpt_service.get_guild_effective_config(guild_id)
+            current_provider = effective_config.ai_provider.value
+        else:
+            current_provider = config.gpt.ai_provider.value
+            
         options = [
-            discord.SelectOption(label="OpenAI", value="openai", description="OpenAI GPT models", emoji="🤖", default=config.gpt.ai_provider.value == "openai"),
+            discord.SelectOption(label="OpenAI", value="openai", description="OpenAI GPT models", emoji="🤖", default=current_provider == "openai"),
             discord.SelectOption(
-                label="Gemini", value="gemini", description="Google Gemini models", emoji="💎", default=config.gpt.ai_provider.value == "gemini"
+                label="Gemini", value="gemini", description="Google Gemini models", emoji="💎", default=current_provider == "gemini"
             ),
         ]
 
@@ -49,15 +60,23 @@ class AIProviderSelect(discord.ui.Select):
         await interaction.response.defer()
         try:
             new_provider = AIProvider(self.values[0])
-            self.config.gpt.ai_provider = new_provider
-
-            # Reinitialize AI services after provider change
-            await self._reinitialize_services(interaction)
-
-            embed = discord.Embed(title="✅ 設定更新", description=f"AIプロバイダーを **{new_provider.value}** に変更しました", color=0x00FF00)
+            
+            if self.gpt_service:
+                # Update guild-specific AI provider
+                success = self.gpt_service.update_guild_ai_provider(self.guild_id, new_provider)
+                if not success:
+                    raise RuntimeError("Failed to update guild AI provider")
+                    
+                embed = discord.Embed(title="✅ 設定更新", description=f"このサーバーのAIプロバイダーを **{new_provider.value}** に変更しました", color=0x00FF00)
+            else:
+                # Fallback to global config (legacy behavior)
+                self.config.gpt.ai_provider = new_provider
+                await self._reinitialize_services(interaction)
+                embed = discord.Embed(title="✅ 設定更新", description=f"AIプロバイダーを **{new_provider.value}** に変更しました", color=0x00FF00)
+            
             await interaction.followup.send(embed=embed, ephemeral=True)
-
             await self.update_main_embed(interaction)
+            
         except Exception as e:
             embed = discord.Embed(title="❌ エラー", description=f"設定の更新に失敗しました: {str(e)}", color=0xFF0000)
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -94,10 +113,19 @@ class AIProviderSelect(discord.ui.Select):
 
 
 class ModelSelect(discord.ui.Select):
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, guild_id: int, gpt_service=None):
         self.config = config
+        self.guild_id = guild_id
+        self.gpt_service = gpt_service
 
-        if config.gpt.ai_provider.value == "openai":
+        # Get effective guild configuration for current provider
+        if gpt_service:
+            effective_config = gpt_service.get_guild_effective_config(guild_id)
+            current_provider = effective_config.ai_provider.value
+        else:
+            current_provider = config.gpt.ai_provider.value
+
+        if current_provider == "openai":
             options = [
                 discord.SelectOption(label="gpt-4o", value="gpt-4o", emoji="🚀"),
                 discord.SelectOption(label="gpt-4", value="gpt-4", emoji="🧠"),
@@ -115,18 +143,35 @@ class ModelSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         try:
-            if self.config.gpt.ai_provider.value == "openai":
-                self.config.gpt.openai_model = self.values[0]
+            selected_model = self.values[0]
+            
+            if self.gpt_service:
+                # Update guild-specific model setting
+                effective_config = self.gpt_service.get_guild_effective_config(self.guild_id)
+                current_provider = effective_config.ai_provider.value
+                
+                if current_provider == "openai":
+                    success = self.gpt_service.update_guild_model(self.guild_id, openai_model=selected_model)
+                else:
+                    success = self.gpt_service.update_guild_model(self.guild_id, gemini_model=selected_model)
+                
+                if not success:
+                    raise RuntimeError("Failed to update guild model")
+                    
+                embed = discord.Embed(title="✅ 設定更新", description=f"このサーバーのモデルを **{selected_model}** に変更しました", color=0x00FF00)
             else:
-                self.config.gpt.gemini_model = self.values[0]
+                # Fallback to global config (legacy behavior)
+                if self.config.gpt.ai_provider.value == "openai":
+                    self.config.gpt.openai_model = selected_model
+                else:
+                    self.config.gpt.gemini_model = selected_model
 
-            # Reinitialize AI services after model change
-            await self._reinitialize_services(interaction)
+                await self._reinitialize_services(interaction)
+                embed = discord.Embed(title="✅ 設定更新", description=f"モデルを **{selected_model}** に変更しました", color=0x00FF00)
 
-            embed = discord.Embed(title="✅ 設定更新", description=f"モデルを **{self.values[0]}** に変更しました", color=0x00FF00)
             await interaction.followup.send(embed=embed, ephemeral=True)
-
             await self.update_main_embed(interaction)
+            
         except Exception as e:
             embed = discord.Embed(title="❌ エラー", description=f"設定の更新に失敗しました: {str(e)}", color=0xFF0000)
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -349,14 +394,26 @@ class BotCommands:
             else:
                 await ctx.send("性格の変更に失敗しました")
 
-        @commands.hybrid_command(name="config", brief="設定を変更")
+        @commands.hybrid_command(name="config", brief="このサーバーの設定を変更")
         async def change_setting(ctx: commands.context.Context):
-            view = ConfigView(self.config)
-            embed = discord.Embed(title="⚙️ Bot 設定", color=0x00AAFF)
-            embed.description = "下のメニューから設定を変更してください"
-
-            active_model = self.config.gpt.openai_model if self.config.gpt.ai_provider.value == "openai" else self.config.gpt.gemini_model
-            embed.add_field(name="現在のモデル", value=f"{active_model} ({self.config.gpt.ai_provider.value})", inline=True)
+            guild_id = ctx.guild.id if ctx.guild else 0
+            view = ConfigView(self.config, guild_id, self.gpt_service)
+            
+            # Get effective configuration for this guild
+            if self.gpt_service:
+                effective_config = self.gpt_service.get_guild_effective_config(guild_id)
+                active_model = effective_config.openai_model if effective_config.ai_provider.value == "openai" else effective_config.gemini_model
+                provider_display = effective_config.ai_provider.value
+                custom_config = self.gpt_service.guild_config_manager.has_custom_config(guild_id)
+                title = f"⚙️ サーバー設定 {f'(カスタム)' if custom_config else '(デフォルト)'}"
+            else:
+                active_model = self.config.gpt.openai_model if self.config.gpt.ai_provider.value == "openai" else self.config.gpt.gemini_model
+                provider_display = self.config.gpt.ai_provider.value
+                title = "⚙️ Bot 設定"
+            
+            embed = discord.Embed(title=title, color=0x00AAFF)
+            embed.description = "下のメニューからこのサーバーの設定を変更してください"
+            embed.add_field(name="現在のモデル", value=f"{active_model} ({provider_display})", inline=True)
             embed.add_field(name="画像解像度", value=self.config.gpt.image_resolution.name, inline=True)
             embed.add_field(name="履歴サイズ", value=str(self.config.bot.history_size), inline=True)
             embed.add_field(name="画像保存", value="✅" if self.config.bot.save_image_input else "❌", inline=True)
@@ -411,6 +468,50 @@ class BotCommands:
 
             await ctx.send(embed=embed)
 
+        @commands.hybrid_command(name="guild_config_reset", brief="このサーバーの設定をデフォルトにリセット")
+        async def reset_guild_config(ctx: commands.context.Context):
+            guild_id = ctx.guild.id if ctx.guild else 0
+            if guild_id == 0:
+                await ctx.send("❌ このコマンドはDMでは使用できません")
+                return
+                
+            success = self.gpt_service.reset_guild_config(guild_id, preserve_system_prompt=False)
+            if success:
+                embed = discord.Embed(title="✅ 設定リセット完了", description="このサーバーの設定をデフォルトにリセットしました", color=0x00FF00)
+            else:
+                embed = discord.Embed(title="❌ エラー", description="設定のリセットに失敗しました", color=0xFF0000)
+            await ctx.send(embed=embed)
+
+        @commands.hybrid_command(name="guild_config_show", brief="このサーバーの現在設定を表示")
+        async def show_guild_config(ctx: commands.context.Context):
+            guild_id = ctx.guild.id if ctx.guild else 0
+            if guild_id == 0:
+                await ctx.send("❌ このコマンドはDMでは使用できません")
+                return
+                
+            effective_config = self.gpt_service.get_guild_effective_config(guild_id)
+            has_custom = self.gpt_service.guild_config_manager.has_custom_config(guild_id)
+            
+            embed = discord.Embed(
+                title=f"🏛️ サーバー設定情報 {f'(カスタム)' if has_custom else '(デフォルト)'}",
+                color=0x00AAFF
+            )
+            
+            embed.add_field(name="AIプロバイダー", value=effective_config.ai_provider.value, inline=True)
+            active_model = effective_config.openai_model if effective_config.ai_provider.value == "openai" else effective_config.gemini_model
+            embed.add_field(name="使用モデル", value=active_model, inline=True)
+            embed.add_field(name="システムプロンプト", value="カスタム" if effective_config.custom_system_prompt else "デフォルト", inline=True)
+            
+            if effective_config.custom_system_prompt:
+                prompt_preview = effective_config.custom_system_prompt[:100] + "..." if len(effective_config.custom_system_prompt) > 100 else effective_config.custom_system_prompt
+                embed.add_field(name="カスタムプロンプト", value=f"```{prompt_preview}```", inline=False)
+            
+            embed.add_field(name="max_token", value=str(effective_config.max_token), inline=True)
+            embed.add_field(name="temperature", value=str(effective_config.temperature), inline=True)
+            embed.add_field(name="履歴サイズ", value=str(effective_config.history_size), inline=True)
+            
+            await ctx.send(embed=embed)
+
         @commands.hybrid_command(name="help", brief="help")
         async def help_command(ctx: commands.context.Context, args=None):
             help_embed = discord.Embed()
@@ -442,4 +543,6 @@ class BotCommands:
         self.bot.add_command(change_setting)
         self.bot.add_command(reset_setting)
         self.bot.add_command(check_history)
+        self.bot.add_command(reset_guild_config)
+        self.bot.add_command(show_guild_config)
         self.bot.add_command(help_command)
