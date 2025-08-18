@@ -8,6 +8,7 @@ from pathlib import Path
 import discord
 import openai
 from discord.ext import commands, tasks
+
 sys.path.append(str(Path(__file__).parent.parent))
 
 from modules.commands import BotCommands
@@ -65,7 +66,6 @@ class BotCog(commands.Cog):
     async def web_search_question(self, ctx: commands.context.Context, input: str):
         """サーチAPIを使って回答を生成する"""
         try:
-            self.gpt_service.token_ranking.setdefault(ctx.guild.id, {})
             self.gpt_service.initialize_chat_history(ctx.guild.id)
 
             self.logger.info(f"[Search Input] {str(input)}")
@@ -84,8 +84,10 @@ class BotCog(commands.Cog):
             if self.config.bot.save_api_response is True:
                 self.gpt_service.chat_histories[ctx.guild.id].add_assistant_message(response_text)
 
-            self.gpt_service.delete_old_history(guild_id=ctx.guild.id)
-            self.gpt_service.update_token_ranking(ctx.guild.id, ctx.author.id, response.usage.total_tokens)
+            # Apply history reduction using standard ChatHistoryTruncationReducer method
+            is_reduced = await self.gpt_service.chat_histories[ctx.guild.id].reduce()
+            if is_reduced:
+                self.logger.info(f"History reduced to {len(self.gpt_service.chat_histories[ctx.guild.id].messages)} messages for guild {ctx.guild.id}")
 
             await ctx.send(content=response_text)
 
@@ -117,16 +119,13 @@ class BotCog(commands.Cog):
         if self.bot.user.id in [member.id for member in message.mentions]:
             try:
                 # Initialize services
-                self.gpt_service.token_ranking.setdefault(message.guild.id, {})
                 self.gpt_service.initialize_chat_history(message.guild.id)
 
                 # Parse message and get GPT response
                 plane_message, reference_message, attachments = await self.message_parser.parse_message(message)
-                response, usage = await self.gpt_service.send_question_gpt(plane_message, reference_message, attachments, message.guild.id)
+                response = await self.gpt_service.send_question_gpt(plane_message, reference_message, attachments, message.guild.id)
 
-                # Update tracking and send response
-                self.gpt_service.update_token_ranking(message.guild.id, message.author.id, usage)
-                self.gpt_service.delete_old_history(guild_id=message.guild.id)
+                # History cleanup is now handled automatically by ChatHistoryTruncationReducer
                 await message.channel.send(response)
 
             except ValueError as e:
