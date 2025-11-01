@@ -231,8 +231,10 @@ class EnhancedHistoryManager:
             if reducer_type == 'ChatHistorySummarizationReducer':
                 # AI Serviceを取得
                 ai_service = AIServiceFactory.create_service(self._create_temp_config(guild_id))
+                # Get the underlying chat completion service
+                chat_completion_service = ai_service.get_chat_completion_service()
                 history = ChatHistorySummarizationReducer(
-                    service=ai_service,
+                    service=chat_completion_service,
                     system_message=system_prompt,
                     target_count=target_count
                 )
@@ -281,26 +283,29 @@ class EnhancedHistoryManager:
         try:
             effective_config = self.guild_config_manager.get_effective_config(guild_id)
             system_prompt = effective_config.custom_system_prompt or effective_config.default_system_prompt
-            
+
             # AI Serviceを作成
             ai_service = AIServiceFactory.create_service(self._create_temp_config(guild_id))
-            
+
+            # Get the underlying chat completion service (required by ChatHistorySummarizationReducer)
+            chat_completion_service = ai_service.get_chat_completion_service()
+
             # ChatHistorySummarizationReducerを作成
             history = ChatHistorySummarizationReducer(
-                service=ai_service,
+                service=chat_completion_service,
                 system_message=system_prompt,
                 target_count=self.config.bot.history_size
             )
-            
+
             self.logger.info(f"Created new summarization history for guild {guild_id}")
             return history
-            
+
         except Exception as e:
             self.logger.error(f"Failed to create new history for guild {guild_id}: {e}")
             # Fallback to TruncationReducer
             effective_config = self.guild_config_manager.get_effective_config(guild_id)
             system_prompt = effective_config.custom_system_prompt or effective_config.default_system_prompt
-            
+
             return ChatHistoryTruncationReducer(
                 system_message=system_prompt,
                 target_count=self.config.bot.history_size
@@ -393,8 +398,10 @@ class EnhancedHistoryManager:
             # 新しい履歴を作成
             if isinstance(history, ChatHistorySummarizationReducer):
                 ai_service = AIServiceFactory.create_service(self._create_temp_config(guild_id))
+                # Get the underlying chat completion service
+                chat_completion_service = ai_service.get_chat_completion_service()
                 new_history = ChatHistorySummarizationReducer(
-                    service=ai_service,
+                    service=chat_completion_service,
                     system_message=system_prompt,
                     target_count=self.config.bot.history_size
                 )

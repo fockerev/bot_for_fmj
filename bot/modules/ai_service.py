@@ -26,6 +26,11 @@ class AIServiceInterface(ABC):
         """Get chat response from AI service"""
         pass
 
+    @abstractmethod
+    def get_chat_completion_service(self):
+        """Get the underlying chat completion service (for ChatHistorySummarizationReducer)"""
+        pass
+
 
 class OpenAIService(AIServiceInterface):
     """OpenAI service implementation using Semantic Kernel"""
@@ -41,6 +46,10 @@ class OpenAIService(AIServiceInterface):
         service_id = "openai_chat"
         self.kernel.add_service(OpenAIChatCompletion(service_id=service_id, api_key=api_key, ai_model_id=config.gpt.openai_model))
         self.chat_completion_service = self.kernel.get_service(type=OpenAIChatCompletion)
+
+    def get_chat_completion_service(self):
+        """Get the underlying OpenAI chat completion service"""
+        return self.chat_completion_service
 
     async def get_chat_response(self, chat_history: ChatHistory, settings: dict) -> str:
         """Get chat response from OpenAI"""
@@ -69,6 +78,10 @@ class GeminiService(AIServiceInterface):
         # Use the model directly from config (same as OpenAI approach)
         self.kernel.add_service(GoogleAIChatCompletion(service_id=service_id, api_key=api_key, gemini_model_id=config.gpt.gemini_model))
         self.chat_completion_service = self.kernel.get_service(type=GoogleAIChatCompletion)
+
+    def get_chat_completion_service(self):
+        """Get the underlying Gemini chat completion service"""
+        return self.chat_completion_service
 
     async def get_chat_response(self, chat_history: ChatHistory, settings: dict) -> str:
         """Get chat response from Gemini"""
