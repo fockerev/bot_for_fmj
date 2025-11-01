@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import logging
 import sys
@@ -5,7 +6,6 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import openai
-
 from semantic_kernel.contents.history_reducer.chat_history_truncation_reducer import ChatHistoryTruncationReducer
 
 # Add current directory to sys.path for absolute imports
@@ -13,6 +13,7 @@ sys.path.append(str(Path(__file__).parent))
 
 from ai_service import AIServiceFactory, AIServiceInterface
 from config import AIProvider, AppConfig, ImageReso
+from enhanced_history_manager import EnhancedHistoryManager
 from guild_config import EffectiveGuildConfig, GuildConfigManager
 
 
@@ -26,14 +27,21 @@ class GptService:
         # Initialize guild configuration manager
         self.guild_config_manager = GuildConfigManager(config)
 
+        # Enhanced history manager (NEW)
+        self.enhanced_history_manager = EnhancedHistoryManager(config, self.guild_config_manager)
+
         # Guild-specific AI services
         self.ai_services: Dict[int, AIServiceInterface] = {}
 
         # Legacy global AI service for compatibility
         self._initialize_ai_service()
 
+        # Legacy chat histories (DEPRECATED - will be phased out)
         self.chat_histories: Dict[int, ChatHistoryTruncationReducer] = {}
         self.last_activity: datetime.datetime = datetime.datetime.now()
+
+        # Flag for enhanced mode
+        self.use_enhanced_history = True
 
     def _initialize_ai_service(self):
         """Initialize AI service using factory"""
@@ -110,15 +118,17 @@ class GptService:
 
     def initialize_chat_history(self, guild_id: int) -> None:
         """Initialize chat history for a guild if not exists"""
+        if self.use_enhanced_history:
+            # Enhanced history manager handles initialization automatically
+            return
+
         if guild_id not in self.chat_histories:
             effective_config = self.guild_config_manager.get_effective_config(guild_id)
             system_prompt = effective_config.custom_system_prompt or effective_config.default_system_prompt
 
             # Create ChatHistoryTruncationReducer
-            self.chat_histories[guild_id] = ChatHistoryTruncationReducer(
-                target_count=self.config.bot.history_size
-            )
-            self.chat_histories[guild_id].add_system_message(system_prompt)
+            self.chat_histories[guild_id] = ChatHistoryTruncationReducer(system_message=system_prompt, target_count=self.config.bot.history_size)
+            # self.chat_histories[guild_id].add_system_message(system_prompt)
 
             self.logger.info(f"Initialized chat history with auto-reduce for guild {guild_id} (target: {self.config.bot.history_size} messages)")
 
@@ -133,11 +143,8 @@ class GptService:
             ChatHistoryTruncationReducer: New chat history instance
         """
         ai_service = self._get_ai_service(guild_id)
-        history = ChatHistoryTruncationReducer(
-            service=ai_service,
-            target_count=self.config.bot.history_size
-        )
-        history.add_system_message(system_message)
+        history = ChatHistoryTruncationReducer(service=ai_service, system_message=system_message, target_count=self.config.bot.history_size)
+        # history.add_system_message(system_message)
         return history
 
     def reset_history(self, guild_id: int) -> bool:
@@ -149,6 +156,10 @@ class GptService:
         Returns:
             bool: True if successful, False otherwise
         """
+        if self.use_enhanced_history:
+            # Use enhanced history manager
+            return asyncio.create_task(self.enhanced_history_manager.reset_history(guild_id)).result()
+
         if guild_id in self.chat_histories:
             # Get current system prompt (preserve custom settings)
             current_system_prompt = self.get_system_prompt(guild_id)
@@ -211,6 +222,10 @@ class GptService:
             # Save custom system prompt to guild config
             self.guild_config_manager.update_guild_config(guild_id, custom_system_prompt=text)
 
+            if self.use_enhanced_history:
+                # Use enhanced history manager
+                return asyncio.create_task(self.enhanced_history_manager.change_character(guild_id, text)).result()
+
             if guild_id in self.chat_histories:
                 # Preserve existing chat history, only replace system message
                 messages = self.chat_histories[guild_id].messages
@@ -242,10 +257,12 @@ class GptService:
         Returns:
             int: Number of messages in history
         """
+        if self.use_enhanced_history:
+            return self.enhanced_history_manager.get_history_size(guild_id)
+
         if guild_id in self.chat_histories:
             return len(self.chat_histories[guild_id].messages)
         return 0
-
 
     async def send_question_gpt(self, question: str, reference: Optional[str], attachments: list, guild_id: int) -> str:
         """Send question to GPT using Semantic Kernel and get response
@@ -261,32 +278,45 @@ class GptService:
         """
         self.logger.info(f"[Question] {question}")
 
-        # Initialize chat history if not exists
-        self.initialize_chat_history(guild_id)
-
         # Build user message
         user_message = question
         if reference is not None:
             user_message += f"\n## 以下へ言及\n{reference}"
             self.logger.info(f"[Reference] {reference}")
 
-        # Add user message to chat history (auto-reduce will trigger if needed)
-        self.chat_histories[guild_id].add_user_message(user_message)
+        if self.use_enhanced_history:
+            # Use enhanced history manager
+            await self.enhanced_history_manager.add_user_message(guild_id, user_message)
 
-        # Handle image attachments (fallback to OpenAI direct call for vision)
-        if len(attachments) > 0:
-            response_text = await self._handle_image_request(guild_id, user_message, attachments)
+            # Handle image attachments (fallback to OpenAI direct call for vision)
+            if len(attachments) > 0:
+                response_text = await self._handle_image_request_enhanced(guild_id, user_message, attachments)
+            else:
+                # Use Semantic Kernel for text-only conversations
+                response_text = await self._handle_text_request_enhanced(guild_id)
+
+            await self.enhanced_history_manager.add_assistant_message(guild_id, response_text)
         else:
-            # Use Semantic Kernel for text-only conversations
-            response_text = await self._handle_text_request(guild_id, user_message)
+            # Legacy mode
+            self.initialize_chat_history(guild_id)
 
-        # Add assistant response to chat history
-        self.chat_histories[guild_id].add_assistant_message(response_text)
+            # Add user message to chat history (auto-reduce will trigger if needed)
+            self.chat_histories[guild_id].add_user_message(user_message)
 
-        # Apply history reduction using standard ChatHistoryTruncationReducer method
-        is_reduced = await self.chat_histories[guild_id].reduce()
-        if is_reduced:
-            self.logger.info(f"History reduced to {len(self.chat_histories[guild_id].messages)} messages for guild {guild_id}")
+            # Handle image attachments (fallback to OpenAI direct call for vision)
+            if len(attachments) > 0:
+                response_text = await self._handle_image_request(guild_id, user_message, attachments)
+            else:
+                # Use Semantic Kernel for text-only conversations
+                response_text = await self._handle_text_request(guild_id, user_message)
+
+            # Add assistant response to chat history
+            self.chat_histories[guild_id].add_assistant_message(response_text)
+
+            # Apply history reduction using standard ChatHistoryTruncationReducer method
+            is_reduced = await self.chat_histories[guild_id].reduce()
+            if is_reduced:
+                self.logger.info(f"History reduced to {len(self.chat_histories[guild_id].messages)} messages for guild {guild_id}")
 
         self.logger.info(f"[Response] {response_text}")
         self.last_activity = datetime.datetime.now()
@@ -325,6 +355,49 @@ class GptService:
 
         return str(response.choices[0].message.content)
 
+    async def _handle_image_request_enhanced(self, guild_id: int, user_message: str, attachments: list) -> str:
+        """Enhanced版: 画像付きリクエストの処理"""
+        # Enhanced history managerから履歴を取得
+        history = await self.enhanced_history_manager.get_history(guild_id)
+
+        # 既存の実装を使用（履歴取得方法のみ変更）
+        self.logger.info(f"[Attachments] {attachments}")
+
+        reso = "low" if self.config.gpt.image_resolution == ImageReso.LOW else "high"
+        image_input = [{"type": "image_url", "image_url": {"url": url, "detail": reso}} for url in attachments]
+
+        # Convert chat history to OpenAI format for vision
+        messages = [{"role": msg.role.value, "content": str(msg.content)} for msg in history.messages]
+
+        # Add current message with images
+        messages.append({"role": "user", "content": [{"type": "text", "text": user_message}] + image_input})
+
+        response = openai.chat.completions.create(
+            model=self.config.gpt.openai_model,  # Always use OpenAI model for image processing
+            messages=messages,
+            max_tokens=self.config.gpt.max_token,
+            temperature=self.config.gpt.temperature,
+        )
+
+        return str(response.choices[0].message.content)
+
+    async def _handle_text_request_enhanced(self, guild_id: int) -> str:
+        """Enhanced版: テキストのみリクエストの処理"""
+        try:
+            history = await self.enhanced_history_manager.get_history(guild_id)
+            ai_service = self._get_ai_service(guild_id)
+            effective_config = self.guild_config_manager.get_effective_config(guild_id)
+
+            settings = {"max_tokens": effective_config.max_token, "temperature": effective_config.temperature}
+
+            response_text = await ai_service.get_chat_response(history, settings)
+            return response_text
+
+        except Exception as e:
+            error_msg = f"AI サービスエラー: {str(e)}"
+            self.logger.error(f"AI service error for guild {guild_id}: {e}")
+            return error_msg
+
     async def _handle_text_request(self, guild_id: int, user_message: str) -> str:
         """Handle text-only request using guild-specific AI service
 
@@ -359,6 +432,9 @@ class GptService:
         Returns:
             str: System prompt text, empty string if not found
         """
+        if self.use_enhanced_history:
+            return self.enhanced_history_manager.get_system_prompt(guild_id)
+
         if guild_id in self.chat_histories:
             system_messages = [msg for msg in self.chat_histories[guild_id].messages if msg.role.value == "system"]
             if system_messages:
@@ -385,10 +461,7 @@ class GptService:
         """
         # Create empty history first, then add messages
         ai_service = self._get_ai_service(guild_id)
-        new_chat_history = ChatHistoryTruncationReducer(
-            service=ai_service,
-            target_count=self.config.bot.history_size
-        )
+        new_chat_history = ChatHistoryTruncationReducer(service=ai_service, target_count=self.config.bot.history_size)
         self._add_messages_to_history(new_chat_history, messages)
         return new_chat_history
 
@@ -459,11 +532,15 @@ class GptService:
         try:
             # Update the config
             self.config.bot.history_size = new_size
-            
-            # Update all existing chat histories
+
+            if self.use_enhanced_history:
+                # Use enhanced history manager
+                return asyncio.create_task(self.enhanced_history_manager.update_history_size(new_size)).result()
+
+            # Update all existing chat histories (legacy)
             for guild_id, chat_history in self.chat_histories.items():
                 chat_history.target_count = new_size
-                
+
             self.logger.info(f"Updated history size to {new_size} for {len(self.chat_histories)} chat histories")
             return True
         except Exception as e:
