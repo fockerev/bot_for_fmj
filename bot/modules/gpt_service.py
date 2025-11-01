@@ -1,4 +1,3 @@
-import asyncio
 import datetime
 import logging
 import sys
@@ -28,7 +27,15 @@ class GptService:
         self.guild_config_manager = GuildConfigManager(config)
 
         # Enhanced history manager (NEW)
-        self.enhanced_history_manager = EnhancedHistoryManager(config, self.guild_config_manager)
+        try:
+            self.enhanced_history_manager = EnhancedHistoryManager(config, self.guild_config_manager)
+            self.use_enhanced_history = True
+            self.logger.info("Enhanced history manager initialized successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize enhanced history manager: {e}")
+            self.logger.warning("Falling back to legacy history mode")
+            self.enhanced_history_manager = None
+            self.use_enhanced_history = False
 
         # Guild-specific AI services
         self.ai_services: Dict[int, AIServiceInterface] = {}
@@ -39,9 +46,6 @@ class GptService:
         # Legacy chat histories (DEPRECATED - will be phased out)
         self.chat_histories: Dict[int, ChatHistoryTruncationReducer] = {}
         self.last_activity: datetime.datetime = datetime.datetime.now()
-
-        # Flag for enhanced mode
-        self.use_enhanced_history = True
 
     def _initialize_ai_service(self):
         """Initialize AI service using factory"""
@@ -128,7 +132,6 @@ class GptService:
 
             # Create ChatHistoryTruncationReducer
             self.chat_histories[guild_id] = ChatHistoryTruncationReducer(system_message=system_prompt, target_count=self.config.bot.history_size)
-            # self.chat_histories[guild_id].add_system_message(system_prompt)
 
             self.logger.info(f"Initialized chat history with auto-reduce for guild {guild_id} (target: {self.config.bot.history_size} messages)")
 
@@ -144,10 +147,9 @@ class GptService:
         """
         ai_service = self._get_ai_service(guild_id)
         history = ChatHistoryTruncationReducer(service=ai_service, system_message=system_message, target_count=self.config.bot.history_size)
-        # history.add_system_message(system_message)
         return history
 
-    def reset_history(self, guild_id: int) -> bool:
+    async def reset_history(self, guild_id: int) -> bool:
         """Reset chat history for a guild while preserving system prompt settings
 
         Args:
@@ -156,9 +158,14 @@ class GptService:
         Returns:
             bool: True if successful, False otherwise
         """
-        if self.use_enhanced_history:
+        if self.use_enhanced_history and self.enhanced_history_manager:
             # Use enhanced history manager
-            return asyncio.create_task(self.enhanced_history_manager.reset_history(guild_id)).result()
+            try:
+                return await self.enhanced_history_manager.reset_history(guild_id)
+            except Exception as e:
+                self.logger.error(f"Enhanced history reset failed for guild {guild_id}: {e}")
+                self.logger.warning("Falling back to legacy mode for this operation")
+                # Fall through to legacy mode
 
         if guild_id in self.chat_histories:
             # Get current system prompt (preserve custom settings)
@@ -208,7 +215,7 @@ class GptService:
             self.logger.error(f"Failed to reset system character for guild {guild_id}: {e}")
             return False
 
-    def change_character(self, guild_id: int, text: str) -> bool:
+    async def change_character(self, guild_id: int, text: str) -> bool:
         """Change system character setting for GPT
 
         Args:
@@ -222,9 +229,14 @@ class GptService:
             # Save custom system prompt to guild config
             self.guild_config_manager.update_guild_config(guild_id, custom_system_prompt=text)
 
-            if self.use_enhanced_history:
+            if self.use_enhanced_history and self.enhanced_history_manager:
                 # Use enhanced history manager
-                return asyncio.create_task(self.enhanced_history_manager.change_character(guild_id, text)).result()
+                try:
+                    return await self.enhanced_history_manager.change_character(guild_id, text)
+                except Exception as e:
+                    self.logger.error(f"Enhanced character change failed for guild {guild_id}: {e}")
+                    self.logger.warning("Falling back to legacy mode for this operation")
+                    # Fall through to legacy mode
 
             if guild_id in self.chat_histories:
                 # Preserve existing chat history, only replace system message
@@ -263,6 +275,96 @@ class GptService:
         if guild_id in self.chat_histories:
             return len(self.chat_histories[guild_id].messages)
         return 0
+
+    async def get_history_messages(self, guild_id: int):
+        """Get chat history messages for a guild (abstraction layer)
+
+        Args:
+            guild_id: Discord guild ID
+
+        Returns:
+            list: List of chat messages, or empty list if no history
+        """
+        try:
+            if self.use_enhanced_history and self.enhanced_history_manager:
+                # Get history from enhanced manager
+                try:
+                    history = await self.enhanced_history_manager.get_history(guild_id)
+                    return history.messages if history else []
+                except Exception as e:
+                    self.logger.error(f"Enhanced history retrieval failed for guild {guild_id}: {e}")
+                    self.logger.warning("Falling back to legacy mode")
+                    # Fall through to legacy mode
+
+            if guild_id in self.chat_histories:
+                return self.chat_histories[guild_id].messages
+            return []
+        except Exception as e:
+            self.logger.error(f"Failed to get history messages for guild {guild_id}: {e}")
+            return []
+
+    async def add_user_message_to_history(self, guild_id: int, message: str):
+        """Add user message to chat history (abstraction layer)
+
+        Args:
+            guild_id: Discord guild ID
+            message: User message text
+        """
+        try:
+            if self.use_enhanced_history and self.enhanced_history_manager:
+                try:
+                    await self.enhanced_history_manager.add_user_message(guild_id, message)
+                    return
+                except Exception as e:
+                    self.logger.error(f"Enhanced add user message failed for guild {guild_id}: {e}")
+                    self.logger.warning("Falling back to legacy mode")
+                    # Fall through to legacy mode
+
+            self.initialize_chat_history(guild_id)
+            self.chat_histories[guild_id].add_user_message(message)
+        except Exception as e:
+            self.logger.error(f"Failed to add user message for guild {guild_id}: {e}")
+            raise
+
+    async def add_assistant_message_to_history(self, guild_id: int, message: str):
+        """Add assistant message to chat history (abstraction layer)
+
+        Args:
+            guild_id: Discord guild ID
+            message: Assistant message text
+        """
+        try:
+            if self.use_enhanced_history and self.enhanced_history_manager:
+                try:
+                    await self.enhanced_history_manager.add_assistant_message(guild_id, message)
+                    return
+                except Exception as e:
+                    self.logger.error(f"Enhanced add assistant message failed for guild {guild_id}: {e}")
+                    self.logger.warning("Falling back to legacy mode")
+                    # Fall through to legacy mode
+
+            if guild_id in self.chat_histories:
+                self.chat_histories[guild_id].add_assistant_message(message)
+        except Exception as e:
+            self.logger.error(f"Failed to add assistant message for guild {guild_id}: {e}")
+            raise
+
+    async def reduce_history(self, guild_id: int) -> bool:
+        """Apply history reduction (abstraction layer)
+
+        Args:
+            guild_id: Discord guild ID
+
+        Returns:
+            bool: True if history was reduced, False otherwise
+        """
+        if self.use_enhanced_history:
+            # Enhanced manager handles reduction automatically in background
+            return False
+        else:
+            if guild_id in self.chat_histories:
+                return await self.chat_histories[guild_id].reduce()
+            return False
 
     async def send_question_gpt(self, question: str, reference: Optional[str], attachments: list, guild_id: int) -> str:
         """Send question to GPT using Semantic Kernel and get response
@@ -527,15 +629,20 @@ class GptService:
             self.logger.error(f"Failed to reset guild config for {guild_id}: {e}")
             return False
 
-    def update_history_size(self, new_size: int) -> bool:
+    async def update_history_size(self, new_size: int) -> bool:
         """Update history size for all existing chat histories"""
         try:
             # Update the config
             self.config.bot.history_size = new_size
 
-            if self.use_enhanced_history:
+            if self.use_enhanced_history and self.enhanced_history_manager:
                 # Use enhanced history manager
-                return asyncio.create_task(self.enhanced_history_manager.update_history_size(new_size)).result()
+                try:
+                    return await self.enhanced_history_manager.update_history_size(new_size)
+                except Exception as e:
+                    self.logger.error(f"Enhanced history size update failed: {e}")
+                    self.logger.warning("Falling back to legacy mode for this operation")
+                    # Fall through to legacy mode
 
             # Update all existing chat histories (legacy)
             for guild_id, chat_history in self.chat_histories.items():

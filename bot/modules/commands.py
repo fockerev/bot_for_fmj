@@ -345,7 +345,7 @@ class NumberSettingsModal(discord.ui.Modal):
             if 1 <= new_size <= 100:
                 if self.gpt_service:
                     # Use the new update_history_size method to update both config and existing chat histories
-                    success = self.gpt_service.update_history_size(new_size)
+                    success = await self.gpt_service.update_history_size(new_size)
                     if success:
                         embed = discord.Embed(title="✅ 設定更新", description=f"履歴サイズを **{new_size}** に変更しました", color=0x00FF00)
                     else:
@@ -354,7 +354,7 @@ class NumberSettingsModal(discord.ui.Modal):
                     # Fallback to only updating config (legacy behavior)
                     self.config.bot.history_size = new_size
                     embed = discord.Embed(title="✅ 設定更新", description=f"履歴サイズを **{new_size}** に変更しました", color=0x00FF00)
-                
+
                 await interaction.response.send_message(embed=embed, ephemeral=True)
             else:
                 embed = discord.Embed(title="❌ エラー", description="履歴サイズは1-100の範囲で入力してください", color=0xFF0000)
@@ -375,7 +375,7 @@ class BotCommands:
 
         @commands.hybrid_command(name="history_reset", brief="会話履歴をリセットする. 60分ごとに自動実行")
         async def reset_h(ctx):
-            ret = self.gpt_service.reset_history(guild_id=ctx.guild.id)
+            ret = await self.gpt_service.reset_history(guild_id=ctx.guild.id)
             if ret:
                 await ctx.send("会話履歴をリセットしました")
             else:
@@ -384,9 +384,12 @@ class BotCommands:
         @commands.hybrid_command(name="history", brief="対話履歴を出力")
         async def check_history(ctx):
             guild_id = ctx.guild.id
-            if guild_id in self.gpt_service.chat_histories and len(self.gpt_service.chat_histories[guild_id].messages) > 0:
+            # Use abstraction layer to get history messages
+            messages = await self.gpt_service.get_history_messages(guild_id)
+
+            if messages and len(messages) > 0:
                 embed = discord.Embed(title="History", color=0x00FF4C)
-                for idx, msg in enumerate(self.gpt_service.chat_histories[guild_id].messages):
+                for idx, msg in enumerate(messages):
                     content = str(msg.content)
                     if len(content) > 150:
                         content = content[:150]
@@ -405,7 +408,7 @@ class BotCommands:
 
         @commands.hybrid_command(name="chara", brief="引数で入力した文を性格として設定する")
         async def change(ctx: commands.context.Context, text):
-            ret = self.gpt_service.change_character(guild_id=ctx.guild.id, text=text)
+            ret = await self.gpt_service.change_character(guild_id=ctx.guild.id, text=text)
             if ret:
                 await ctx.send("性格を変更しました")
             else:

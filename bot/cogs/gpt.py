@@ -66,15 +66,16 @@ class BotCog(commands.Cog):
     async def web_search_question(self, ctx: commands.context.Context, input: str):
         """サーチAPIを使って回答を生成する"""
         try:
-            self.gpt_service.initialize_chat_history(ctx.guild.id)
-
+            # Use abstraction layer to add user message
+            await self.gpt_service.add_user_message_to_history(ctx.guild.id, input)
             self.logger.info(f"[Search Input] {str(input)}")
-            self.gpt_service.chat_histories[ctx.guild.id].add_user_message(input)
 
             await ctx.defer()
 
+            # Get history messages using abstraction layer
+            history_messages = await self.gpt_service.get_history_messages(ctx.guild.id)
             messages = []
-            for msg in self.gpt_service.chat_histories[ctx.guild.id].messages:
+            for msg in history_messages:
                 messages.append({"role": msg.role.value, "content": str(msg.content)})
 
             response = openai.responses.create(model=self.config.gpt.model, tools=[{"type": "web_search_preview"}], input=messages, max_output_tokens=800)
@@ -82,12 +83,14 @@ class BotCog(commands.Cog):
             self.logger.info(f"[Response] {response_text}")
 
             if self.config.bot.save_api_response is True:
-                self.gpt_service.chat_histories[ctx.guild.id].add_assistant_message(response_text)
+                # Use abstraction layer to add assistant message
+                await self.gpt_service.add_assistant_message_to_history(ctx.guild.id, response_text)
 
-            # Apply history reduction using standard ChatHistoryTruncationReducer method
-            is_reduced = await self.gpt_service.chat_histories[ctx.guild.id].reduce()
+            # Apply history reduction using abstraction layer
+            is_reduced = await self.gpt_service.reduce_history(ctx.guild.id)
             if is_reduced:
-                self.logger.info(f"History reduced to {len(self.gpt_service.chat_histories[ctx.guild.id].messages)} messages for guild {ctx.guild.id}")
+                history_size = self.gpt_service.check_history_size(ctx.guild.id)
+                self.logger.info(f"History reduced to {history_size} messages for guild {ctx.guild.id}")
 
             await ctx.send(content=response_text)
 
@@ -100,12 +103,18 @@ class BotCog(commands.Cog):
         """定期的な履歴リセット処理"""
         try:
             if self.gpt_service.should_reset_history():
-                if len(self.gpt_service.chat_histories) > 0:
-                    for guild_id in list(self.gpt_service.chat_histories.keys()):
-                        self.gpt_service.reset_history(guild_id)
+                # For legacy mode, reset all active chat histories
+                if not self.gpt_service.use_enhanced_history:
+                    if len(self.gpt_service.chat_histories) > 0:
+                        for guild_id in list(self.gpt_service.chat_histories.keys()):
+                            await self.gpt_service.reset_history(guild_id)
 
-                    self.logger.info("cyclic history reset")
-                    self.gpt_service.last_activity = datetime.datetime.now()
+                        self.logger.info("cyclic history reset")
+                else:
+                    # Enhanced mode handles history management automatically
+                    self.logger.debug("Enhanced mode active - skipping manual reset")
+
+                self.gpt_service.last_activity = datetime.datetime.now()
         except Exception as e:
             self.logger.error(f"Error in loop_reset: {e}")
 
