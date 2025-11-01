@@ -363,7 +363,39 @@ class GptService:
             return False
         else:
             if guild_id in self.chat_histories:
-                return await self.chat_histories[guild_id].reduce()
+                history = self.chat_histories[guild_id]
+
+                # Save system message before reduction
+                system_message = None
+                for msg in history.messages:
+                    if msg.role.value == "system":
+                        system_message = str(msg.content)
+                        break
+
+                # Apply reduction
+                is_reduced = await history.reduce()
+
+                # If reduced and system message was present, restore it
+                if is_reduced and system_message:
+                    # Check if system message still exists
+                    has_system = any(msg.role.value == "system" for msg in history.messages)
+
+                    if not has_system:
+                        # Re-add system message at the beginning
+                        existing_messages = history.messages.copy()
+                        history.messages.clear()
+                        history.add_system_message(system_message)
+
+                        # Re-add other messages
+                        for msg in existing_messages:
+                            if msg.role.value == "user":
+                                history.add_user_message(str(msg.content))
+                            elif msg.role.value == "assistant":
+                                history.add_assistant_message(str(msg.content))
+
+                        self.logger.info(f"System message restored after reduction for guild {guild_id}")
+
+                return is_reduced
             return False
 
     async def send_question_gpt(self, question: str, reference: Optional[str], attachments: list, guild_id: int) -> str:

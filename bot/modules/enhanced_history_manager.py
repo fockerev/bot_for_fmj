@@ -324,14 +324,40 @@ class EnhancedHistoryManager:
     async def _background_optimize(self, guild_id: int, history: Union[ChatHistorySummarizationReducer, ChatHistoryTruncationReducer]):
         """バックグラウンド最適化処理"""
         try:
+            # Save system message before reduction
+            system_message = None
+            for msg in history.messages:
+                if msg.role.value == "system":
+                    system_message = str(msg.content)
+                    break
+
             # 履歴削減
             is_reduced = await history.reduce()
             if is_reduced:
                 self.logger.info(f"History reduced for guild {guild_id}: {len(history.messages)} messages")
-            
+
+                # Restore system message if it was removed
+                if system_message:
+                    has_system = any(msg.role.value == "system" for msg in history.messages)
+
+                    if not has_system:
+                        # Re-add system message at the beginning
+                        existing_messages = history.messages.copy()
+                        history.messages.clear()
+                        history.add_system_message(system_message)
+
+                        # Re-add other messages
+                        for msg in existing_messages:
+                            if msg.role.value == "user":
+                                history.add_user_message(str(msg.content))
+                            elif msg.role.value == "assistant":
+                                history.add_assistant_message(str(msg.content))
+
+                        self.logger.info(f"System message restored after reduction for guild {guild_id}")
+
             # 定期的な永続化（Hot Cacheにある間も保存）
             await self.persistence.save_history(guild_id, history)
-            
+
         except Exception as e:
             self.logger.error(f"Background optimization failed for guild {guild_id}: {e}")
     
