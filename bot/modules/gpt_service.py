@@ -43,10 +43,10 @@ class GptService:
         # Guild-specific AI services
         self.ai_services: Dict[int, AIServiceInterface] = {}
 
-        # Legacy global AI service for compatibility
+        # Legacy global AI service (fallback compatibility)
         self._initialize_ai_service()
 
-        # Legacy chat histories (DEPRECATED - will be phased out)
+        # Legacy chat histories (fallback when EnhancedHistoryManager fails)
         self.chat_histories: Dict[int, ChatHistoryTruncationReducer] = {}
         self.last_activity: datetime.datetime = datetime.datetime.now()
 
@@ -714,42 +714,6 @@ class GptService:
             bool: True if history should be reset (after 60 minutes of inactivity)
         """
         return (datetime.datetime.now() - self.last_activity).total_seconds() > 60 * 60
-
-    def _reconstruct_chat_history(self, messages, guild_id: int) -> ChatHistoryTruncationReducer:
-        """Reconstruct chat history from message list
-
-        Args:
-            messages: List of messages to add
-            guild_id: Discord guild ID
-
-        Returns:
-            ChatHistoryTruncationReducer: Reconstructed chat history
-        """
-        # Create empty history first, then add messages
-        ai_service = self._get_ai_service(guild_id)
-        new_chat_history = ChatHistoryTruncationReducer(
-            service=ai_service,
-            target_count=self.config.bot.history_size,
-            threshold_count=self.config.bot.history_size + 5,  # Buffer for critical message pairs
-            auto_reduce=False  # Manual control for better performance
-        )
-        self._add_messages_to_history(new_chat_history, messages)
-        return new_chat_history
-
-    def _add_messages_to_history(self, chat_history: ChatHistoryTruncationReducer, messages) -> None:
-        """Add messages to chat history based on their role
-
-        Args:
-            chat_history: Chat history to add messages to
-            messages: List of messages to add
-        """
-        for msg in messages:
-            if msg.role.value == "system":
-                chat_history.add_system_message(str(msg.content))
-            elif msg.role.value == "user":
-                chat_history.add_user_message(str(msg.content))
-            elif msg.role.value == "assistant":
-                chat_history.add_assistant_message(str(msg.content))
 
     # Guild configuration management methods
     def update_guild_ai_provider(self, guild_id: int, provider: AIProvider) -> bool:
