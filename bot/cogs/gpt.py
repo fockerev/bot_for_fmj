@@ -78,7 +78,9 @@ class BotCog(commands.Cog):
             for msg in history_messages:
                 messages.append({"role": msg.role.value, "content": str(msg.content)})
 
-            response = openai.responses.create(model=self.config.gpt.model, tools=[{"type": "web_search_preview"}], input=messages, max_output_tokens=800)
+            response = openai.responses.create(
+                model=self.config.gpt.openai_model, tools=[{"type": "web_search_preview"}], input=messages, max_output_tokens=800
+            )
             response_text = str(response.output_text)
             self.logger.info(f"[Response] {response_text}")
 
