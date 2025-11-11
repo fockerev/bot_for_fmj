@@ -5,7 +5,10 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import openai
+from semantic_kernel.contents import ChatMessageContent, ImageContent, TextContent
+from semantic_kernel.contents.chat_history import ChatHistory
 from semantic_kernel.contents.history_reducer.chat_history_truncation_reducer import ChatHistoryTruncationReducer
+from semantic_kernel.contents.utils.author_role import AuthorRole
 
 # Add current directory to sys.path for absolute imports
 sys.path.append(str(Path(__file__).parent))
@@ -420,12 +423,13 @@ class GptService:
 
         if self.use_enhanced_history:
             # Use enhanced history manager
-            await self.enhanced_history_manager.add_user_message(guild_id, user_message)
-
-            # Handle image attachments (fallback to OpenAI direct call for vision)
+            # Handle image attachments using Semantic Kernel ImageContent
             if len(attachments) > 0:
+                # Image request handler adds the multimodal message to history internally
                 response_text = await self._handle_image_request_enhanced(guild_id, user_message, attachments)
             else:
+                # Add text-only user message to history
+                await self.enhanced_history_manager.add_user_message(guild_id, user_message)
                 # Use Semantic Kernel for text-only conversations
                 response_text = await self._handle_text_request_enhanced(guild_id)
 
@@ -434,13 +438,13 @@ class GptService:
             # Legacy mode
             self.initialize_chat_history(guild_id)
 
-            # Add user message to chat history (auto-reduce will trigger if needed)
-            self.chat_histories[guild_id].add_user_message(user_message)
-
-            # Handle image attachments (fallback to OpenAI direct call for vision)
+            # Handle image attachments using Semantic Kernel ImageContent
             if len(attachments) > 0:
+                # Image request handler adds the multimodal message to history internally
                 response_text = await self._handle_image_request(guild_id, user_message, attachments)
             else:
+                # Add text-only user message to chat history (auto-reduce will trigger if needed)
+                self.chat_histories[guild_id].add_user_message(user_message)
                 # Use Semantic Kernel for text-only conversations
                 response_text = await self._handle_text_request(guild_id, user_message)
 
@@ -458,7 +462,7 @@ class GptService:
         return response_text
 
     async def _handle_image_request(self, guild_id: int, user_message: str, attachments: list) -> str:
-        """Handle request with image attachments using OpenAI direct API
+        """Handle request with image attachments using Semantic Kernel ImageContent
 
         Args:
             guild_id: Discord guild ID
@@ -470,18 +474,73 @@ class GptService:
         """
         self.logger.info(f"[Attachments] {attachments}")
 
+        # Get AI service for this guild
+        ai_service = self._get_ai_service(guild_id)
+        effective_config = self.guild_config_manager.get_effective_config(guild_id)
+
+        # Create image resolution detail setting
         reso = "low" if self.config.gpt.image_resolution == ImageReso.LOW else "high"
 
+        # Build message items with text and images using Semantic Kernel content types
+        message_items = [TextContent(text=user_message)]
+
+        # Add ImageContent for each attachment URL
+        for url in attachments:
+            # ImageContent with URI and detail level in metadata for OpenAI
+            message_items.append(ImageContent(uri=url, metadata={"detail": reso}))
+
+        # Create ChatMessageContent with text and images
+        user_message_with_images = ChatMessageContent(
+            role=AuthorRole.USER,
+            items=message_items
+        )
+
+        # Add the multimodal message to chat history
+        self.chat_histories[guild_id].messages.append(user_message_with_images)
+
+        # Get response using AI service with vision support
+        settings = {
+            "max_tokens": effective_config.max_token,
+            "temperature": effective_config.temperature
+        }
+
+        try:
+            response_text = await ai_service.get_chat_response(
+                self.chat_histories[guild_id],
+                settings
+            )
+            return response_text
+        except Exception as e:
+            self.logger.error(f"Vision API error for guild {guild_id}: {e}")
+            # Fallback to direct OpenAI API if service doesn't support vision
+            return await self._handle_image_request_fallback(guild_id, user_message, attachments)
+
+    async def _handle_image_request_fallback(self, guild_id: int, user_message: str, attachments: list) -> str:
+        """Fallback to direct OpenAI API for image processing
+
+        Args:
+            guild_id: Discord guild ID
+            user_message: User message text
+            attachments: List of attachment URLs
+
+        Returns:
+            str: Response text
+        """
+        self.logger.warning(f"Using fallback OpenAI API for image processing in guild {guild_id}")
+
+        reso = "low" if self.config.gpt.image_resolution == ImageReso.LOW else "high"
         image_input = [{"type": "image_url", "image_url": {"url": url, "detail": reso}} for url in attachments]
 
-        # Convert chat history to OpenAI format for vision
-        messages = [{"role": msg.role.value, "content": str(msg.content)} for msg in self.chat_histories[guild_id].messages]
+        # Convert chat history to OpenAI format
+        messages = []
+        for msg in self.chat_histories[guild_id].messages[:-1]:  # Exclude the last message we just added
+            messages.append({"role": msg.role.value, "content": str(msg.content)})
 
         # Add current message with images
         messages.append({"role": "user", "content": [{"type": "text", "text": user_message}] + image_input})
 
         response = openai.chat.completions.create(
-            model=self.config.gpt.openai_model,  # Always use OpenAI model for image processing
+            model=self.config.gpt.openai_model,
             messages=messages,
             max_tokens=self.config.gpt.max_token,
             temperature=self.config.gpt.temperature,
@@ -490,24 +549,86 @@ class GptService:
         return str(response.choices[0].message.content)
 
     async def _handle_image_request_enhanced(self, guild_id: int, user_message: str, attachments: list) -> str:
-        """Enhanced版: 画像付きリクエストの処理"""
-        # Enhanced history managerから履歴を取得
+        """Enhanced版: Handle image requests using Semantic Kernel ImageContent
+
+        Args:
+            guild_id: Discord guild ID
+            user_message: User message text
+            attachments: List of attachment URLs
+
+        Returns:
+            str: Response text
+        """
+        self.logger.info(f"[Attachments] {attachments}")
+
+        # Get AI service and effective config for this guild
+        ai_service = self._get_ai_service(guild_id)
+        effective_config = self.guild_config_manager.get_effective_config(guild_id)
+
+        # Get history from enhanced manager
         history = await self.enhanced_history_manager.get_history(guild_id)
 
-        # 既存の実装を使用（履歴取得方法のみ変更）
-        self.logger.info(f"[Attachments] {attachments}")
+        # Create image resolution detail setting
+        reso = "low" if self.config.gpt.image_resolution == ImageReso.LOW else "high"
+
+        # Build message items with text and images using Semantic Kernel content types
+        message_items = [TextContent(text=user_message)]
+
+        # Add ImageContent for each attachment URL
+        for url in attachments:
+            # ImageContent with URI and detail level in metadata for OpenAI
+            message_items.append(ImageContent(uri=url, metadata={"detail": reso}))
+
+        # Create ChatMessageContent with text and images
+        user_message_with_images = ChatMessageContent(
+            role=AuthorRole.USER,
+            items=message_items
+        )
+
+        # Add the multimodal message to chat history
+        history.messages.append(user_message_with_images)
+
+        # Get response using AI service with vision support
+        settings = {
+            "max_tokens": effective_config.max_token,
+            "temperature": effective_config.temperature
+        }
+
+        try:
+            response_text = await ai_service.get_chat_response(history, settings)
+            return response_text
+        except Exception as e:
+            self.logger.error(f"Enhanced vision API error for guild {guild_id}: {e}")
+            # Fallback to direct OpenAI API
+            return await self._handle_image_request_enhanced_fallback(guild_id, user_message, attachments, history)
+
+    async def _handle_image_request_enhanced_fallback(self, guild_id: int, user_message: str, attachments: list, history) -> str:
+        """Enhanced版: Fallback to direct OpenAI API for image processing
+
+        Args:
+            guild_id: Discord guild ID
+            user_message: User message text
+            attachments: List of attachment URLs
+            history: Chat history
+
+        Returns:
+            str: Response text
+        """
+        self.logger.warning(f"Using fallback OpenAI API for enhanced image processing in guild {guild_id}")
 
         reso = "low" if self.config.gpt.image_resolution == ImageReso.LOW else "high"
         image_input = [{"type": "image_url", "image_url": {"url": url, "detail": reso}} for url in attachments]
 
-        # Convert chat history to OpenAI format for vision
-        messages = [{"role": msg.role.value, "content": str(msg.content)} for msg in history.messages]
+        # Convert chat history to OpenAI format
+        messages = []
+        for msg in history.messages[:-1]:  # Exclude the last message we just added
+            messages.append({"role": msg.role.value, "content": str(msg.content)})
 
         # Add current message with images
         messages.append({"role": "user", "content": [{"type": "text", "text": user_message}] + image_input})
 
         response = openai.chat.completions.create(
-            model=self.config.gpt.openai_model,  # Always use OpenAI model for image processing
+            model=self.config.gpt.openai_model,
             messages=messages,
             max_tokens=self.config.gpt.max_token,
             temperature=self.config.gpt.temperature,
