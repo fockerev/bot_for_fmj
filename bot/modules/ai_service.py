@@ -35,17 +35,30 @@ class AIServiceInterface(ABC):
 class OpenAIService(AIServiceInterface):
     """OpenAI service implementation using Semantic Kernel"""
 
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, shared_kernel: Optional[Kernel] = None):
         self.logger = logging.getLogger("openai_service")
-        self.kernel = Kernel()
+
+        # Use shared kernel if provided, otherwise create new one
+        self.kernel = shared_kernel if shared_kernel is not None else Kernel()
 
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable not set")
 
-        service_id = "openai_chat"
-        self.kernel.add_service(OpenAIChatCompletion(service_id=service_id, api_key=api_key, ai_model_id=config.gpt.openai_model))
-        self.chat_completion_service = self.kernel.get_service(type=OpenAIChatCompletion)
+        self.service_id = "openai_chat"
+
+        # Only add service if it doesn't already exist in the kernel
+        try:
+            self.chat_completion_service = self.kernel.get_service(service_id=self.service_id)
+            self.logger.info("Using existing OpenAI service from shared kernel")
+        except Exception:
+            self.kernel.add_service(OpenAIChatCompletion(
+                service_id=self.service_id,
+                api_key=api_key,
+                ai_model_id=config.gpt.openai_model
+            ))
+            self.chat_completion_service = self.kernel.get_service(service_id=self.service_id)
+            self.logger.info("Added new OpenAI service to kernel")
 
     def get_chat_completion_service(self):
         """Get the underlying OpenAI chat completion service"""
@@ -53,10 +66,16 @@ class OpenAIService(AIServiceInterface):
 
     async def get_chat_response(self, chat_history: ChatHistory, settings: dict) -> str:
         """Get chat response from OpenAI"""
-        execution_settings = OpenAIChatPromptExecutionSettings(max_tokens=settings.get("max_tokens", 1600), temperature=settings.get("temperature", 0.7))
+        execution_settings = OpenAIChatPromptExecutionSettings(
+            max_tokens=settings.get("max_tokens", 1600),
+            temperature=settings.get("temperature", 0.7)
+        )
 
         response = await self.chat_completion_service.get_chat_message_contents(
-            chat_history=chat_history, settings=execution_settings, kernel=self.kernel, arguments=KernelArguments()
+            chat_history=chat_history,
+            settings=execution_settings,
+            kernel=self.kernel,
+            arguments=KernelArguments()
         )
 
         return str(response[0].content)
@@ -65,19 +84,30 @@ class OpenAIService(AIServiceInterface):
 class GeminiService(AIServiceInterface):
     """Gemini service implementation using Semantic Kernel"""
 
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, shared_kernel: Optional[Kernel] = None):
         self.logger = logging.getLogger("gemini_service")
-        self.kernel = Kernel()
+
+        # Use shared kernel if provided, otherwise create new one
+        self.kernel = shared_kernel if shared_kernel is not None else Kernel()
 
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY environment variable not set")
 
-        service_id = "gemini_chat"
+        self.service_id = "gemini_chat"
 
-        # Use the model directly from config (same as OpenAI approach)
-        self.kernel.add_service(GoogleAIChatCompletion(service_id=service_id, api_key=api_key, gemini_model_id=config.gpt.gemini_model))
-        self.chat_completion_service = self.kernel.get_service(type=GoogleAIChatCompletion)
+        # Only add service if it doesn't already exist in the kernel
+        try:
+            self.chat_completion_service = self.kernel.get_service(service_id=self.service_id)
+            self.logger.info("Using existing Gemini service from shared kernel")
+        except Exception:
+            self.kernel.add_service(GoogleAIChatCompletion(
+                service_id=self.service_id,
+                api_key=api_key,
+                gemini_model_id=config.gpt.gemini_model
+            ))
+            self.chat_completion_service = self.kernel.get_service(service_id=self.service_id)
+            self.logger.info("Added new Gemini service to kernel")
 
     def get_chat_completion_service(self):
         """Get the underlying Gemini chat completion service"""
@@ -86,10 +116,16 @@ class GeminiService(AIServiceInterface):
     async def get_chat_response(self, chat_history: ChatHistory, settings: dict) -> str:
         """Get chat response from Gemini"""
         try:
-            execution_settings = GoogleAIChatPromptExecutionSettings(max_tokens=settings.get("max_tokens", 1600), temperature=settings.get("temperature", 0.7))
+            execution_settings = GoogleAIChatPromptExecutionSettings(
+                max_tokens=settings.get("max_tokens", 1600),
+                temperature=settings.get("temperature", 0.7)
+            )
 
             response = await self.chat_completion_service.get_chat_message_contents(
-                chat_history=chat_history, settings=execution_settings, kernel=self.kernel, arguments=KernelArguments()
+                chat_history=chat_history,
+                settings=execution_settings,
+                kernel=self.kernel,
+                arguments=KernelArguments()
             )
 
             return str(response[0].content)
@@ -103,23 +139,51 @@ class GeminiService(AIServiceInterface):
 
 
 class AIServiceFactory:
-    """Factory class for creating AI services"""
+    """Factory class for creating AI services with optional shared kernel"""
+
+    _shared_kernel: Optional[Kernel] = None
+
+    @classmethod
+    def get_shared_kernel(cls) -> Kernel:
+        """Get or create shared kernel instance"""
+        if cls._shared_kernel is None:
+            cls._shared_kernel = Kernel()
+            logging.getLogger("ai_service_factory").info("Created new shared Kernel instance")
+        return cls._shared_kernel
+
+    @classmethod
+    def reset_shared_kernel(cls):
+        """Reset shared kernel (useful for testing or reconfiguration)"""
+        cls._shared_kernel = None
+        logging.getLogger("ai_service_factory").info("Reset shared Kernel instance")
 
     @staticmethod
-    def create_service(config: AppConfig) -> Optional[AIServiceInterface]:
-        """Create AI service based on configuration"""
+    def create_service(config: AppConfig, use_shared_kernel: bool = True) -> Optional[AIServiceInterface]:
+        """
+        Create AI service based on configuration
+
+        Args:
+            config: Application configuration
+            use_shared_kernel: If True, use shared kernel across services (recommended)
+
+        Returns:
+            AIServiceInterface implementation or None on error
+        """
         logger = logging.getLogger("ai_service_factory")
 
         try:
             # Get provider value for comparison
             provider_value = config.gpt.ai_provider.value if hasattr(config.gpt.ai_provider, "value") else str(config.gpt.ai_provider)
 
+            # Get shared kernel if requested
+            kernel = AIServiceFactory.get_shared_kernel() if use_shared_kernel else None
+
             if provider_value == "openai":
-                logger.info("Creating OpenAI service")
-                return OpenAIService(config)
+                logger.info(f"Creating OpenAI service (shared_kernel={use_shared_kernel})")
+                return OpenAIService(config, shared_kernel=kernel)
             elif provider_value == "gemini":
-                logger.info("Creating Gemini service")
-                return GeminiService(config)
+                logger.info(f"Creating Gemini service (shared_kernel={use_shared_kernel})")
+                return GeminiService(config, shared_kernel=kernel)
             else:
                 logger.error(f"Unknown AI provider: {provider_value}")
                 return None

@@ -134,9 +134,14 @@ class GptService:
             system_prompt = effective_config.custom_system_prompt or effective_config.default_system_prompt
 
             # Create ChatHistoryTruncationReducer
-            self.chat_histories[guild_id] = ChatHistoryTruncationReducer(system_message=system_prompt, target_count=self.config.bot.history_size)
+            self.chat_histories[guild_id] = ChatHistoryTruncationReducer(
+                system_message=system_prompt,
+                target_count=self.config.bot.history_size,
+                threshold_count=self.config.bot.history_size + 5,  # Buffer for critical message pairs
+                auto_reduce=False  # Manual control for better performance
+            )
 
-            self.logger.info(f"Initialized chat history with auto-reduce for guild {guild_id} (target: {self.config.bot.history_size} messages)")
+            self.logger.info(f"Initialized chat history with manual reduce for guild {guild_id} (target: {self.config.bot.history_size} messages)")
 
     def _create_new_history_with_system_message(self, system_message: str, guild_id: int) -> ChatHistoryTruncationReducer:
         """Create new chat history with system message
@@ -149,7 +154,13 @@ class GptService:
             ChatHistoryTruncationReducer: New chat history instance
         """
         ai_service = self._get_ai_service(guild_id)
-        history = ChatHistoryTruncationReducer(service=ai_service, system_message=system_message, target_count=self.config.bot.history_size)
+        history = ChatHistoryTruncationReducer(
+            service=ai_service,
+            system_message=system_message,
+            target_count=self.config.bot.history_size,
+            threshold_count=self.config.bot.history_size + 5,  # Buffer for critical message pairs
+            auto_reduce=False  # Manual control for better performance
+        )
         return history
 
     async def reset_history(self, guild_id: int) -> bool:
@@ -716,7 +727,12 @@ class GptService:
         """
         # Create empty history first, then add messages
         ai_service = self._get_ai_service(guild_id)
-        new_chat_history = ChatHistoryTruncationReducer(service=ai_service, target_count=self.config.bot.history_size)
+        new_chat_history = ChatHistoryTruncationReducer(
+            service=ai_service,
+            target_count=self.config.bot.history_size,
+            threshold_count=self.config.bot.history_size + 5,  # Buffer for critical message pairs
+            auto_reduce=False  # Manual control for better performance
+        )
         self._add_messages_to_history(new_chat_history, messages)
         return new_chat_history
 

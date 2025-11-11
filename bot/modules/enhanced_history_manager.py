@@ -236,25 +236,36 @@ class EnhancedHistoryManager:
                 history = ChatHistorySummarizationReducer(
                     service=chat_completion_service,
                     system_message=system_prompt,
-                    target_count=target_count
+                    target_count=target_count,
+                    threshold_count=target_count + 5,  # Buffer for critical message pairs
+                    auto_reduce=False  # Manual control for better performance
                 )
             else:
                 # Fallback to TruncationReducer
                 history = ChatHistoryTruncationReducer(
                     system_message=system_prompt,
-                    target_count=target_count
+                    target_count=target_count,
+                    threshold_count=target_count + 5,  # Buffer for critical message pairs
+                    auto_reduce=False  # Manual control for better performance
                 )
             
             # メッセージを復元
+            # システムメッセージは既にReducer初期化時に現在の設定から設定済み
+            # 永続化データのシステムメッセージはスキップして重複を防ぐ
+            restored_count = 0
             for msg_data in data.get('messages', []):
                 if msg_data['role'] == 'system':
-                    history.add_system_message(msg_data['content'])
+                    # Skip system message - already set during reducer initialization with current config
+                    self.logger.debug(f"Skipping persisted system message (using current config instead)")
+                    continue
                 elif msg_data['role'] == 'user':
                     history.add_user_message(msg_data['content'])
+                    restored_count += 1
                 elif msg_data['role'] == 'assistant':
                     history.add_assistant_message(msg_data['content'])
-                    
-            self.logger.info(f"Restored history for guild {guild_id}: {len(data.get('messages', []))} messages")
+                    restored_count += 1
+
+            self.logger.info(f"Restored history for guild {guild_id}: {restored_count} messages (system message from current config)")
             return history
             
         except Exception as e:
@@ -294,7 +305,9 @@ class EnhancedHistoryManager:
             history = ChatHistorySummarizationReducer(
                 service=chat_completion_service,
                 system_message=system_prompt,
-                target_count=self.config.bot.history_size
+                target_count=self.config.bot.history_size,
+                threshold_count=self.config.bot.history_size + 5,  # Buffer for critical message pairs
+                auto_reduce=False  # Manual control for better performance
             )
 
             self.logger.info(f"Created new summarization history for guild {guild_id}")
@@ -308,7 +321,9 @@ class EnhancedHistoryManager:
 
             return ChatHistoryTruncationReducer(
                 system_message=system_prompt,
-                target_count=self.config.bot.history_size
+                target_count=self.config.bot.history_size,
+                threshold_count=self.config.bot.history_size + 5,  # Buffer for critical message pairs
+                auto_reduce=False  # Manual control for better performance
             )
     
     async def add_user_message(self, guild_id: int, message: str):
