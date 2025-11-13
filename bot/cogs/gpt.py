@@ -16,6 +16,7 @@ from modules.config import AppConfig
 from modules.gpt_service import GptService
 from modules.message_parser import MessageParser
 from modules.mcp_client import MCPClient
+from modules.web_search_plugin import WebSearchPlugin
 
 VERSION = "20250527_2100"
 
@@ -76,24 +77,28 @@ class BotCog(commands.Cog):
     async def web_search_question(self, ctx: commands.context.Context, input: str):
         """サーチAPIを使って回答を生成する"""
         try:
-            # Use abstraction layer to add user message
-            await self.gpt_service.add_user_message_to_history(ctx.guild.id, input)
             self.logger.info(f"[Search Input] {str(input)}")
 
             await ctx.defer()
 
             # Check if MCP is enabled
             if self.config.mcp.enabled and self.mcp_client:
-                response_text = await self._mcp_search(ctx.guild.id, input)
+                # Plugin-based search handles history internally
+                response_text = await self._mcp_search_with_plugin(ctx.guild.id, input)
+
+                # Add conversation to history if enabled
+                if self.config.bot.save_api_response is True:
+                    await self.gpt_service.add_user_message_to_history(ctx.guild.id, input)
+                    await self.gpt_service.add_assistant_message_to_history(ctx.guild.id, response_text)
             else:
-                # Fallback to OpenAI web search
-                response_text = await self._openai_search(ctx.guild.id)
+                # Fallback to OpenAI web search (handles history internally)
+                response_text = await self._openai_search(ctx.guild.id, input)
+
+                # Add assistant response to history if enabled
+                if self.config.bot.save_api_response is True:
+                    await self.gpt_service.add_assistant_message_to_history(ctx.guild.id, response_text)
 
             self.logger.info(f"[Response] {response_text}")
-
-            if self.config.bot.save_api_response is True:
-                # Use abstraction layer to add assistant message
-                await self.gpt_service.add_assistant_message_to_history(ctx.guild.id, response_text)
 
             # Apply history reduction using abstraction layer
             is_reduced = await self.gpt_service.reduce_history(ctx.guild.id)
@@ -107,58 +112,57 @@ class BotCog(commands.Cog):
             self.logger.exception("error occurred in search api processing")
             await ctx.send(f"なんかエラー出た {e}")
 
-    async def _mcp_search(self, guild_id: int, query: str) -> str:
-        """Perform web search using MCP server."""
-        try:
-            # Start MCP client
-            await self.mcp_client.start()
+    async def _mcp_search_with_plugin(self, guild_id: int, query: str) -> str:
+        """Perform web search using MCP plugin with Semantic Kernel.
 
-            # Perform full web search
-            search_results = await self.mcp_client.full_web_search(
-                query,
-                limit=self.config.mcp.search_result_limit
+        This method uses the WebSearchPlugin which allows the AI to automatically
+        call the web search function when needed.
+        """
+        try:
+            self.logger.info("=" * 80)
+            self.logger.info("🔍 [MCP SEARCH WITH PLUGIN] Initializing...")
+            self.logger.info(f"🏰 Guild ID: {guild_id}")
+            self.logger.info(f"📝 Query: {query}")
+            self.logger.info(f"🔢 Search result limit: {self.config.mcp.search_result_limit}")
+            self.logger.info("=" * 80)
+
+            # Create web search plugin
+            self.logger.info("🔌 Creating WebSearchPlugin instance...")
+            web_search_plugin = WebSearchPlugin(
+                mcp_client=self.mcp_client,
+                search_result_limit=self.config.mcp.search_result_limit
+            )
+            self.logger.info("✅ WebSearchPlugin created")
+
+            # Use AI service with plugin to generate response
+            # force_search=True ensures web search is ALWAYS executed
+            self.logger.info("🤖 Delegating to GptService.generate_search_response_with_plugin...")
+            self.logger.info("🔒 Using force_search=True to ensure web search is always executed")
+            response = await self.gpt_service.generate_search_response_with_plugin(
+                guild_id=guild_id,
+                query=query,
+                web_search_plugin=web_search_plugin,
+                force_search=True  # Always execute web search for /search command
             )
 
-            # Format search results for AI processing
-            search_context = self._format_search_results(search_results)
-
-            # Use AI service to generate response based on search results
-            # This will use the guild's chat history and system prompt
-            response = await self.gpt_service.generate_search_response(guild_id, query, search_context)
+            self.logger.info("=" * 80)
+            self.logger.info("✅ [MCP SEARCH WITH PLUGIN] Completed successfully")
+            self.logger.info("=" * 80)
 
             return response
 
         except Exception as e:
-            self.logger.error(f"MCP search failed: {e}")
+            self.logger.error("=" * 80)
+            self.logger.error(f"❌ [MCP SEARCH WITH PLUGIN] Failed: {e}")
+            self.logger.error("=" * 80)
+            self.logger.exception("Full error traceback:")
             raise
-        finally:
-            # Stop MCP client
-            if self.mcp_client:
-                await self.mcp_client.stop()
 
-    def _format_search_results(self, results: list) -> str:
-        """Format search results into a readable context string."""
-        if not results:
-            return "検索結果が見つかりませんでした。"
-
-        formatted = "以下は検索結果です:\n\n"
-        for i, result in enumerate(results, 1):
-            if isinstance(result, dict):
-                title = result.get("title", "No title")
-                url = result.get("url", "")
-                content = result.get("content", result.get("snippet", ""))
-
-                formatted += f"{i}. {title}\n"
-                if url:
-                    formatted += f"   URL: {url}\n"
-                formatted += f"   {content[:500]}...\n\n"
-            else:
-                formatted += f"{i}. {str(result)[:500]}...\n\n"
-
-        return formatted
-
-    async def _openai_search(self, guild_id: int) -> str:
+    async def _openai_search(self, guild_id: int, query: str) -> str:
         """Fallback to OpenAI web search API."""
+        # Add user query to history
+        await self.gpt_service.add_user_message_to_history(guild_id, query)
+
         # Get history messages using abstraction layer
         history_messages = await self.gpt_service.get_history_messages(guild_id)
         messages = []

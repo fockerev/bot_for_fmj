@@ -788,105 +788,178 @@ class GptService:
             self.logger.error(f"Failed to update history size: {e}")
             return False
 
-    async def generate_search_response(self, guild_id: int, query: str, search_context: str) -> str:
-        """Generate AI response based on search results using chat history and system prompt
+    async def generate_search_response_with_plugin(self, guild_id: int, query: str, web_search_plugin, force_search: bool = True) -> str:
+        """Generate AI response using web search plugin with automatic or forced tool calling
 
         Args:
             guild_id: Discord guild ID
             query: User's search query
-            search_context: Formatted search results context
+            web_search_plugin: WebSearchPlugin instance
+            force_search: If True, always execute web search before AI response (default: True)
 
         Returns:
             str: AI-generated response
         """
         try:
+            self.logger.info("=" * 80)
+            self.logger.info("🤖 [SEARCH WITH PLUGIN] Starting plugin-based search")
+            self.logger.info(f"🏰 Guild ID: {guild_id}")
+            self.logger.info(f"📝 User Query: {query}")
+            self.logger.info(f"🔒 Force Search: {force_search}")
+            self.logger.info("=" * 80)
+
             # Get AI service for this guild
             ai_service = self._get_ai_service(guild_id)
             if not ai_service:
                 raise RuntimeError(f"AI service not initialized for guild {guild_id}")
 
-            # Get effective configuration for system prompt
+            # Get effective configuration
             effective_config = self.guild_config_manager.get_effective_config(guild_id)
+            self.logger.info(f"⚙️  AI Provider: {effective_config.ai_provider.value}")
+            self.logger.info(f"⚙️  Model: {effective_config.openai_model if effective_config.ai_provider.value == 'openai' else effective_config.gemini_model}")
+            self.logger.info(f"⚙️  Temperature: {effective_config.temperature}")
+            self.logger.info(f"⚙️  Max Tokens: {effective_config.max_token}")
 
-            # Create a prompt that combines the search context with the user's query
-            # Keep it simple to let system prompt control the response style
-            search_prompt = f"""[Web検索結果]
+            # Force search mode: Execute web search first, then use results in AI response
+            if force_search:
+                self.logger.info("🔒 Force search mode enabled - executing web search directly...")
 
-{search_context}
+                # Directly call the plugin's search function
+                search_results = await web_search_plugin.search(query)
+                self.logger.info(f"✅ Search results obtained ({len(search_results)} characters)")
 
-[質問] {query}"""
-
-            if self.use_enhanced_history and self.enhanced_history_manager:
-                # Use enhanced history manager
-                try:
-                    # Get existing chat history reducer
+                # Get chat history
+                if self.use_enhanced_history and self.enhanced_history_manager:
                     history_reducer = await self.enhanced_history_manager.get_history(guild_id)
-
-                    # Get the messages from the reducer
                     chat_history = ChatHistory()
                     for msg in history_reducer.messages:
                         chat_history.add_message(msg)
-
-                    # Add the search prompt as user message
+                elif guild_id in self.chat_histories:
+                    chat_history = ChatHistory()
+                    for msg in self.chat_histories[guild_id].messages:
+                        chat_history.add_message(msg)
+                else:
+                    # Initialize with system prompt
+                    self.initialize_chat_history(guild_id)
+                    chat_history = ChatHistory()
+                    system_prompt = effective_config.custom_system_prompt or effective_config.default_system_prompt
                     chat_history.add_message(
-                        ChatMessageContent(role=AuthorRole.USER, content=search_prompt)
+                        ChatMessageContent(role=AuthorRole.SYSTEM, content=system_prompt)
                     )
 
-                    # Get completion from AI service with chat history
-                    response_text = await ai_service.get_chat_response(
-                        chat_history=chat_history,
-                        settings={
-                            "temperature": effective_config.temperature,
-                            "max_tokens": 800,
-                        }
-                    )
+                # Create enriched query with search results
+                enriched_query = f"""ユーザーの質問: {query}
 
-                    if not response_text:
-                        return "検索結果を処理できませんでした。"
+Web検索結果:
+{search_results}
 
-                    return response_text
+上記の検索結果を基に、ユーザーの質問に答えてください。"""
 
-                except Exception as e:
-                    self.logger.error(f"Enhanced search response generation failed: {e}")
-                    self.logger.warning("Falling back to legacy mode for search response")
-                    # Fall through to legacy mode
+                chat_history.add_user_message(enriched_query)
+                self.logger.info(f"📋 Chat history size: {len(chat_history.messages)} messages")
+                self.logger.info("🚀 Sending enriched query to AI service...")
 
-            # Legacy mode: use chat history with system prompt
-            chat_history = ChatHistory()
+                # Get AI service response
+                ai_service = self._get_ai_service(guild_id)
+                settings = {
+                    "max_tokens": effective_config.max_token,
+                    "temperature": effective_config.temperature
+                }
 
-            if guild_id in self.chat_histories:
-                # Get existing chat history (which should already include system prompt)
+                response_text = await ai_service.get_chat_response(chat_history, settings)
+
+                self.logger.info("=" * 80)
+                self.logger.info("✅ [SEARCH WITH PLUGIN] Completed successfully (forced mode)")
+                self.logger.info(f"📤 Response length: {len(response_text)} characters")
+                self.logger.info("=" * 80)
+
+                return response_text
+
+            # Auto mode: Let AI decide whether to use the plugin
+            self.logger.info("🤖 Auto mode - AI will decide whether to use web search plugin")
+
+            # Get or create kernel with plugin
+            from semantic_kernel import Kernel
+            kernel = Kernel()
+
+            # Add chat completion service to kernel
+            chat_service = ai_service.get_chat_completion_service()
+            kernel.add_service(chat_service)
+            self.logger.info("✅ Chat completion service added to kernel")
+
+            # Add web search plugin to kernel
+            kernel.add_plugin(web_search_plugin, plugin_name="WebSearch")
+            self.logger.info("✅ WebSearch plugin registered to kernel")
+
+            # Get chat history
+            if self.use_enhanced_history and self.enhanced_history_manager:
+                history_reducer = await self.enhanced_history_manager.get_history(guild_id)
+                chat_history = ChatHistory()
+                for msg in history_reducer.messages:
+                    chat_history.add_message(msg)
+            elif guild_id in self.chat_histories:
+                chat_history = ChatHistory()
                 for msg in self.chat_histories[guild_id].messages:
                     chat_history.add_message(msg)
             else:
-                # Initialize new chat history with system prompt
+                # Initialize with system prompt
                 self.initialize_chat_history(guild_id)
-
-                # Add system message for this new history
+                chat_history = ChatHistory()
                 system_prompt = effective_config.custom_system_prompt or effective_config.default_system_prompt
                 chat_history.add_message(
                     ChatMessageContent(role=AuthorRole.SYSTEM, content=system_prompt)
                 )
 
-            # Add search prompt to history
-            chat_history.add_message(
-                ChatMessageContent(role=AuthorRole.USER, content=search_prompt)
-            )
+            # Add user query
+            chat_history.add_user_message(query)
+            self.logger.info(f"📋 Chat history size: {len(chat_history.messages)} messages")
 
-            # Get completion from AI service
-            response_text = await ai_service.get_chat_response(
+            # Enable automatic function calling
+            from semantic_kernel.connectors.ai.open_ai import OpenAIChatPromptExecutionSettings
+            from semantic_kernel.connectors.ai.google.google_ai import GoogleAIChatPromptExecutionSettings
+            from semantic_kernel.connectors.ai.function_choice_behavior import FunctionChoiceBehavior
+
+            # Determine execution settings based on AI provider
+            if effective_config.ai_provider.value == "openai":
+                execution_settings = OpenAIChatPromptExecutionSettings(
+                    max_tokens=effective_config.max_token,
+                    temperature=effective_config.temperature,
+                    function_choice_behavior=FunctionChoiceBehavior.Auto(filters={"included_plugins": ["WebSearch"]})
+                )
+            else:  # gemini
+                execution_settings = GoogleAIChatPromptExecutionSettings(
+                    max_tokens=effective_config.max_token,
+                    temperature=effective_config.temperature,
+                    function_choice_behavior=FunctionChoiceBehavior.Auto(filters={"included_plugins": ["WebSearch"]})
+                )
+
+            self.logger.info("🔧 Execution settings configured with FunctionChoiceBehavior.Auto")
+            self.logger.info("🚀 Sending request to AI service (plugin may be called automatically)...")
+
+            # Get response with automatic function calling
+            from semantic_kernel.functions import KernelArguments
+            response = await chat_service.get_chat_message_contents(
                 chat_history=chat_history,
-                settings={
-                    "temperature": effective_config.temperature,
-                    "max_tokens": 800,
-                }
+                settings=execution_settings,
+                kernel=kernel,
+                arguments=KernelArguments()
             )
 
-            if not response_text:
+            if not response or len(response) == 0:
+                self.logger.warning("⚠️  No response received from AI service")
                 return "検索結果を処理できませんでした。"
+
+            response_text = str(response[0].content)
+            self.logger.info("=" * 80)
+            self.logger.info("✅ [SEARCH WITH PLUGIN] Completed successfully")
+            self.logger.info(f"📤 Response length: {len(response_text)} characters")
+            self.logger.info("=" * 80)
 
             return response_text
 
         except Exception as e:
-            self.logger.error(f"Failed to generate search response: {e}")
+            self.logger.error("=" * 80)
+            self.logger.error(f"❌ [SEARCH WITH PLUGIN] Failed: {e}")
+            self.logger.error("=" * 80)
+            self.logger.exception("Full error traceback:")
             raise

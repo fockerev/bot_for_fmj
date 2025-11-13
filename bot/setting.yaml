@@ -21,4 +21,4 @@ mcp:
   enabled: True  # MCPサーバーを使用するか
   command: "node"
   args: ["/app/mcp-server/dist/index.js"]
-  search_result_limit: 5  # 検索結果の最大数 (1-10)
+  search_result_limit: 3  # 検索結果の最大数 (1-10)
