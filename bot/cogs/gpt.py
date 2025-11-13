@@ -15,6 +15,7 @@ from modules.commands import BotCommands
 from modules.config import AppConfig
 from modules.gpt_service import GptService
 from modules.message_parser import MessageParser
+from modules.mcp_client import MCPClient
 
 VERSION = "20250527_2100"
 
@@ -30,6 +31,15 @@ class BotCog(commands.Cog):
         # Initialize services
         self.gpt_service = GptService(self.config, self.logger)
         self.message_parser = MessageParser(self.logger)
+
+        # Initialize MCP client if enabled
+        self.mcp_client = None
+        if self.config.mcp.enabled:
+            self.mcp_client = MCPClient(
+                self.config.mcp.command,
+                self.config.mcp.args,
+                self.logger
+            )
 
         # Initialize commands
         self.bot_commands = BotCommands(self.bot, self.gpt_service, self.config)
@@ -72,16 +82,13 @@ class BotCog(commands.Cog):
 
             await ctx.defer()
 
-            # Get history messages using abstraction layer
-            history_messages = await self.gpt_service.get_history_messages(ctx.guild.id)
-            messages = []
-            for msg in history_messages:
-                messages.append({"role": msg.role.value, "content": str(msg.content)})
+            # Check if MCP is enabled
+            if self.config.mcp.enabled and self.mcp_client:
+                response_text = await self._mcp_search(ctx.guild.id, input)
+            else:
+                # Fallback to OpenAI web search
+                response_text = await self._openai_search(ctx.guild.id)
 
-            response = openai.responses.create(
-                model=self.config.gpt.openai_model, tools=[{"type": "web_search_preview"}], input=messages, max_output_tokens=800
-            )
-            response_text = str(response.output_text)
             self.logger.info(f"[Response] {response_text}")
 
             if self.config.bot.save_api_response is True:
@@ -99,6 +106,72 @@ class BotCog(commands.Cog):
         except Exception as e:
             self.logger.exception("error occurred in search api processing")
             await ctx.send(f"なんかエラー出た {e}")
+
+    async def _mcp_search(self, guild_id: int, query: str) -> str:
+        """Perform web search using MCP server."""
+        try:
+            # Start MCP client
+            await self.mcp_client.start()
+
+            # Perform full web search
+            search_results = await self.mcp_client.full_web_search(
+                query,
+                limit=self.config.mcp.search_result_limit
+            )
+
+            # Format search results for AI processing
+            search_context = self._format_search_results(search_results)
+
+            # Use AI service to generate response based on search results
+            # This will use the guild's chat history and system prompt
+            response = await self.gpt_service.generate_search_response(guild_id, query, search_context)
+
+            return response
+
+        except Exception as e:
+            self.logger.error(f"MCP search failed: {e}")
+            raise
+        finally:
+            # Stop MCP client
+            if self.mcp_client:
+                await self.mcp_client.stop()
+
+    def _format_search_results(self, results: list) -> str:
+        """Format search results into a readable context string."""
+        if not results:
+            return "検索結果が見つかりませんでした。"
+
+        formatted = "以下は検索結果です:\n\n"
+        for i, result in enumerate(results, 1):
+            if isinstance(result, dict):
+                title = result.get("title", "No title")
+                url = result.get("url", "")
+                content = result.get("content", result.get("snippet", ""))
+
+                formatted += f"{i}. {title}\n"
+                if url:
+                    formatted += f"   URL: {url}\n"
+                formatted += f"   {content[:500]}...\n\n"
+            else:
+                formatted += f"{i}. {str(result)[:500]}...\n\n"
+
+        return formatted
+
+    async def _openai_search(self, guild_id: int) -> str:
+        """Fallback to OpenAI web search API."""
+        # Get history messages using abstraction layer
+        history_messages = await self.gpt_service.get_history_messages(guild_id)
+        messages = []
+        for msg in history_messages:
+            messages.append({"role": msg.role.value, "content": str(msg.content)})
+
+        response = openai.responses.create(
+            model=self.config.gpt.openai_model,
+            tools=[{"type": "web_search_preview"}],
+            input=messages,
+            max_output_tokens=800
+        )
+        return str(response.output_text)
 
     @tasks.loop(minutes=5)
     async def loop_reset(self):

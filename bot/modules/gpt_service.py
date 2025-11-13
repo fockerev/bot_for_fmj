@@ -89,6 +89,7 @@ class GptService:
                     ),
                     riot_api=self.config.riot_api,
                     bot=self.config.bot,
+                    mcp=self.config.mcp,
                 )
 
                 self.ai_services[guild_id] = AIServiceFactory.create_service(temp_config)
@@ -786,3 +787,106 @@ class GptService:
         except Exception as e:
             self.logger.error(f"Failed to update history size: {e}")
             return False
+
+    async def generate_search_response(self, guild_id: int, query: str, search_context: str) -> str:
+        """Generate AI response based on search results using chat history and system prompt
+
+        Args:
+            guild_id: Discord guild ID
+            query: User's search query
+            search_context: Formatted search results context
+
+        Returns:
+            str: AI-generated response
+        """
+        try:
+            # Get AI service for this guild
+            ai_service = self._get_ai_service(guild_id)
+            if not ai_service:
+                raise RuntimeError(f"AI service not initialized for guild {guild_id}")
+
+            # Get effective configuration for system prompt
+            effective_config = self.guild_config_manager.get_effective_config(guild_id)
+
+            # Create a prompt that combines the search context with the user's query
+            # Keep it simple to let system prompt control the response style
+            search_prompt = f"""[Web検索結果]
+
+{search_context}
+
+[質問] {query}"""
+
+            if self.use_enhanced_history and self.enhanced_history_manager:
+                # Use enhanced history manager
+                try:
+                    # Get existing chat history reducer
+                    history_reducer = await self.enhanced_history_manager.get_history(guild_id)
+
+                    # Get the messages from the reducer
+                    chat_history = ChatHistory()
+                    for msg in history_reducer.messages:
+                        chat_history.add_message(msg)
+
+                    # Add the search prompt as user message
+                    chat_history.add_message(
+                        ChatMessageContent(role=AuthorRole.USER, content=search_prompt)
+                    )
+
+                    # Get completion from AI service with chat history
+                    response_text = await ai_service.get_chat_response(
+                        chat_history=chat_history,
+                        settings={
+                            "temperature": effective_config.temperature,
+                            "max_tokens": 800,
+                        }
+                    )
+
+                    if not response_text:
+                        return "検索結果を処理できませんでした。"
+
+                    return response_text
+
+                except Exception as e:
+                    self.logger.error(f"Enhanced search response generation failed: {e}")
+                    self.logger.warning("Falling back to legacy mode for search response")
+                    # Fall through to legacy mode
+
+            # Legacy mode: use chat history with system prompt
+            chat_history = ChatHistory()
+
+            if guild_id in self.chat_histories:
+                # Get existing chat history (which should already include system prompt)
+                for msg in self.chat_histories[guild_id].messages:
+                    chat_history.add_message(msg)
+            else:
+                # Initialize new chat history with system prompt
+                self.initialize_chat_history(guild_id)
+
+                # Add system message for this new history
+                system_prompt = effective_config.custom_system_prompt or effective_config.default_system_prompt
+                chat_history.add_message(
+                    ChatMessageContent(role=AuthorRole.SYSTEM, content=system_prompt)
+                )
+
+            # Add search prompt to history
+            chat_history.add_message(
+                ChatMessageContent(role=AuthorRole.USER, content=search_prompt)
+            )
+
+            # Get completion from AI service
+            response_text = await ai_service.get_chat_response(
+                chat_history=chat_history,
+                settings={
+                    "temperature": effective_config.temperature,
+                    "max_tokens": 800,
+                }
+            )
+
+            if not response_text:
+                return "検索結果を処理できませんでした。"
+
+            return response_text
+
+        except Exception as e:
+            self.logger.error(f"Failed to generate search response: {e}")
+            raise

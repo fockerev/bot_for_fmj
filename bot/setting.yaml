@@ -16,3 +16,9 @@ bot:
   save_image_input: False # 画像入力を保存するか
   history_size: 16 #履歴配列の最大長
   default_system_promt: "Briefly reply unless otherwise mentioned. speaking Kansai dialect"  # デフォルトのsystemプロンプト
+
+mcp:
+  enabled: True  # MCPサーバーを使用するか
+  command: "node"
+  args: ["/app/mcp-server/dist/index.js"]
+  search_result_limit: 5  # 検索結果の最大数 (1-10)

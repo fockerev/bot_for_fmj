@@ -2,7 +2,7 @@ import inspect
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Type, TypeVar
+from typing import Any, Dict, List, Type, TypeVar
 
 import yaml
 
@@ -69,7 +69,16 @@ class BotConfig(YamlConfig):
 
 
 @dataclass
+class MCPConfig(YamlConfig):
+    enabled: bool
+    command: str
+    args: List[str]
+    search_result_limit: int
+
+
+@dataclass
 class AppConfig(YamlConfig):
     gpt: GptConfig
     riot_api: RiotApiConfig
     bot: BotConfig
+    mcp: MCPConfig
