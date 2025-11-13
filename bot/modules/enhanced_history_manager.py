@@ -275,7 +275,7 @@ class EnhancedHistoryManager:
     def _create_temp_config(self, guild_id: int) -> AppConfig:
         """ギルド用の一時設定オブジェクトを作成"""
         effective_config = self.guild_config_manager.get_effective_config(guild_id)
-        
+
         return AppConfig(
             gpt=type(self.config.gpt)(
                 openai_model=effective_config.openai_model,
@@ -287,6 +287,7 @@ class EnhancedHistoryManager:
             ),
             riot_api=self.config.riot_api,
             bot=self.config.bot,
+            mcp=self.config.mcp,
         )
     
     async def _create_new_history(self, guild_id: int) -> ChatHistorySummarizationReducer:
