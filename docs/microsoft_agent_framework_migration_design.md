@@ -242,6 +242,7 @@ agent:
 
 bot:
   history_size: 16
+  save_failed_user_message: true
   default_system_prompt: "Briefly reply unless otherwise mentioned. speaking Kansai dialect"
 
 logging:
@@ -257,6 +258,8 @@ mcp:
 
 互換性のため、既存の `bot.default_system_promt` は loader で読み取れるようにする。ただし新設定では `default_system_prompt` に寄せる。
 
+現行の `gpt.*` 設定は初期移行時に新しい `agent.*` へ置き換える。ただし移行直後の起動事故を避けるため、loader は当面 `gpt.ai_provider`、`gpt.openai_model`、`gpt.max_token`、`gpt.temperature`、`gpt.image_resolution` を fallback として読む。
+
 ### 6.2 Guild 別設定
 
 既存の `bot/data/guild_configs.json` は概念として維持する。
@@ -271,6 +274,8 @@ mcp:
 - `updated_at`
 
 初期移行では Guild 別 temperature / max tokens は持たせない。必要になったら追加する。
+
+既存の `ai_provider`、`openai_model`、`gemini_model` を持つ `guild_configs.json` は loader で読み込み、新形式の `provider` / `model` へ変換して保存する。初期 provider が `openai` の場合は `openai_model`、`gemini` の場合は `gemini_model` を `model` に採用する。
 
 ### 6.3 ログ
 
@@ -350,7 +355,16 @@ MCP 追加時の方針:
 - `webp`
 - `gif`
 
-初期移行では画像ファイルをローカル保存しない。Discord CDN URL または外部画像 URL を Agent に渡し、会話履歴には URL と detail のみ保存する。URL 検証は現状の `MessageParser` の考え方を活かすが、過度な HEAD request で応答が遅くなる場合は拡張子と Discord attachment の content type を優先する。
+初期移行では画像ファイルをローカル保存しない。Discord CDN URL または外部画像 URL を Agent に渡し、会話履歴には URL と detail のみ保存する。URL 検証は network に依存させず、Discord attachment の `content_type` と URL 拡張子で判定する。
+
+画像入力の制約:
+
+- `https` のみ許可する。
+- `http` URL は自動変換しない。
+- 最大画像数は1メッセージあたり4件。
+- 重複 URL は1件にまとめる。
+- 返信先メッセージの画像添付は初期実装では含めない。
+- unsupported attachment が混ざっている場合は request 全体を validation error にする。
 
 ### 8.3 Riot API レビュー
 
@@ -477,3 +491,63 @@ Riot API レビューは移行対象外とし、事後対応でも復旧しな�
 - 履歴要約
 
 このスコープで Microsoft Agent Framework への移行を完了させ、その後に履歴要約を追加し、さらに後続で MCP を Agent tool として追加する。
+
+## 13. 実装前の確定事項
+
+`docs/microsoft_agent_framework_migration_missing_info.md` の確認結果として、初期実装では以下を採用する。
+
+### 13.1 未確定として残す事項
+
+Microsoft Agent Framework の Python API は実装直前に公式ドキュメントで確認する。特に以下は adapter 実装時に確定する。
+
+- Python パッケージ名とバージョン
+- Agent / client の作成方法
+- OpenAI 接続方法
+- system instruction の渡し方
+- text / image URL の message 形式
+- `max_tokens` / `temperature` の指定方法
+
+これらは `AgentService` 内に閉じ込め、`ChatService`、`SessionStore`、`MessageParser` には漏らさない。
+
+### 13.2 環境変数
+
+Discord Bot 起動時の必須環境変数:
+
+- `DISCORD_BOT_TOKEN`
+- `OPENAI_API_KEY`
+- `GUILD_ID`
+
+任意環境変数:
+
+- `BOT_PREFIX`: 未設定時は `/`
+
+CLI の fake agent 実行では API key を不要とする。real agent 実行では `OPENAI_API_KEY` を必須とする。
+
+### 13.3 Cog 読み込み
+
+`bot/main.py` は `cogs/*.py` の全読み込みをやめ、allowlist 方式で `cogs.chat` のみ読み込む。`riot_api.py` は初期移行・事後対応とも読み込まない。
+
+### 13.4 Agent error 時の履歴保存
+
+`bot.save_failed_user_message` を追加し、初期値は `true` とする。Agent 実行に失敗しても user message は保存し、assistant fallback message は保存しない。
+
+### 13.5 Discord 返信長
+
+Discord の message 上限を超える応答は 1900 文字程度で分割送信する。切り詰めは行わない。
+
+### 13.6 SessionStore
+
+- timestamp は timezone aware ISO 文字列で保存する。
+- timezone は実行環境の local timezone ではなく UTC に統一する。
+- `history_size` は user / assistant を含む message 件数とする。
+- 切り詰め時は可能な範囲で user / assistant のペアを維持する。
+- 破損 JSON は `.bak` に退避して新規 session に fallback する。
+- 既存 Semantic Kernel 履歴は初期移行では移行しない。
+
+### 13.7 Logging
+
+既存 `logging_config.json` ではなく、新しい `logging_service.py` を正とする。ログファイル directory は自動作成する。message preview は最大120文字、画像 URL は query string を除いた host + path までを記録する。
+
+### 13.8 CLI / Test
+
+`pytest` と `pytest-asyncio` を開発・テスト用依存に追加する。smoke test は `pytest.ini` の marker で通常テストから分離する。`chat_cli --fake-agent` は固定文言に加えて入力件数を含む応答にし、テストで検証しやすくする。

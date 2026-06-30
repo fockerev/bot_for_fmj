@@ -148,13 +148,14 @@ bot/
 1. `setup_logging()` を呼ぶ。
 2. `AppConfig.load()` を呼ぶ。
 3. Discord intents を設定する。
-4. `ChatCog` を読み込む。
+4. Cog allowlist に従い `cogs.chat` のみ読み込む。
 5. Guild command sync を行う。
 6. Bot を起動する。
 
 エラー:
 
 - token 未設定なら起動前に `RuntimeError`。
+- `GUILD_ID` 未設定なら Discord Bot 起動時は `RuntimeError`。
 - config load 失敗時は error log を出して終了。
 
 ## 4.2 `bot/cogs/chat.py`
@@ -271,6 +272,7 @@ bot/
 
 - 初期実装では provider は `openai` のみ許可してよい。
 - 未対応 provider は validation error。
+- `/search` は登録しない。
 
 ## 4.3 `bot/modules/message_parser.py`
 
@@ -319,6 +321,8 @@ bot/
 - 許可拡張子: `png`, `jpg`, `jpeg`, `webp`, `gif`
 - query string 付き URL も許可する。
 - 初期実装では network access しない。
+- 最大4件まで返す。
+- 重複 URL は除去する。
 
 ### `is_supported_image_url(url) -> bool`
 
@@ -328,8 +332,10 @@ bot/
 
 仕様:
 
-- scheme は `https` を推奨。`http` は `https` に変換可能なら変換する。
+- scheme は `https` のみ許可する。
+- `http` から `https` への自動変換はしない。
 - path 拡張子で判定する。
+- Discord attachment は `content_type` があれば `image/*` を優先し、なければ拡張子で判定する。
 
 ## 4.4 `bot/modules/chat_service.py`
 
@@ -366,7 +372,8 @@ bot/
 
 エラー:
 
-- Agent error 時は user message を保存するかどうかを設定で選べるようにする。初期値は保存する。
+- Agent error 時は `bot.save_failed_user_message` に従う。初期値は `true`。
+- Agent error 時に user message を保存した場合も assistant fallback message は保存しない。
 - Agent response が空なら fallback text を使う。
 - save 失敗時は error log。可能なら response は返す。
 
@@ -434,7 +441,7 @@ class AgentService(Protocol):
 処理:
 
 1. `convert_messages(messages, settings)` を呼ぶ。
-2. provider / model に対応する Agent を作成または cache から取得する。
+2. `provider + model` に対応する Agent を作成または cache から取得する。
 3. Microsoft Agent Framework で実行する。
 4. text response を抽出する。
 5. `AgentResult(text=...)` を返す。
@@ -456,6 +463,7 @@ class AgentService(Protocol):
 - `text` part は text input へ変換する。
 - `image_url` part は multimodal image input へ変換する。
 - query string 付き画像 URL はそのまま Agent へ渡せるが、log には query を出さない。
+- Microsoft Agent Framework の具体 message API は実装直前に公式ドキュメントで確認し、この関数内に閉じ込める。
 
 ### `FakeAgentService.generate(messages, settings) -> AgentResult`
 
@@ -509,7 +517,8 @@ class AgentService(Protocol):
 
 1. `trim_messages(session)` を呼ぶ。
 2. JSON へ serialize する。
-3. 一時ファイルへ書き込み、rename で置換する。
+3. `guild_<id>.json.tmp` へ書き込み、rename で置換する。
+4. rename 失敗時は `SessionStoreError`。
 
 ### `reset_session(guild_id) -> bool`
 
@@ -531,6 +540,8 @@ class AgentService(Protocol):
 仕様:
 
 - user / assistant messages の末尾 `history_size` 件を残す。
+- `history_size` は user / assistant を含む message 件数とする。
+- 可能な範囲で user / assistant のペアを維持する。
 - 初期実装では要約しない。
 - 後続では削除前に `HistorySummarizer` へ渡す。
 
@@ -587,6 +598,7 @@ class AgentService(Protocol):
 
 - Guild config があれば provider / model / custom prompt を優先する。
 - 未設定項目は global config を使う。
+- 旧形式の `ai_provider`、`openai_model`、`gemini_model` は読み込み時に `provider` / `model` へ変換する。
 
 ### `update_guild_config(guild_id, **kwargs) -> bool`
 
@@ -642,6 +654,7 @@ class AgentConfig:
 @dataclass
 class BotConfig:
     history_size: int
+    save_failed_user_message: bool
     default_system_prompt: str
 
 @dataclass
@@ -660,6 +673,8 @@ class MCPConfig:
 互換:
 
 - `bot.default_system_promt` がある場合は `default_system_prompt` として読む。
+- 旧 `gpt.openai_model`、`gpt.ai_provider`、`gpt.max_token`、`gpt.temperature`、`gpt.image_resolution` は `agent.*` の fallback として読む。
+- 旧 `bot.save_api_response`、`bot.save_image_input` は初期移行では廃止し、設定としては使用しない。
 
 ## 4.9 `bot/modules/logging_service.py`
 
@@ -679,6 +694,7 @@ class MCPConfig:
 
 - log file parent directory がなければ作成する。
 - stdout handler と rotating file handler を設定する。
+- 既存 `logging_config.json` は使用しない。
 
 ### `safe_preview(text, limit=120) -> str`
 
@@ -736,6 +752,13 @@ class MCPConfig:
 4. `ChatRequest` を作る。
 5. `ChatService.handle_chat()` を呼ぶ。
 6. response text を stdout に出す。
+
+終了コード:
+
+- `0`: success
+- `1`: validation / config error
+- `2`: agent execution error
+- `3`: unexpected error
 
 ## 5. シーケンス図
 

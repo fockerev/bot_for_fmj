@@ -65,7 +65,7 @@ class FakeAgentService:
 
     async def generate(self, messages, settings):
         self.requests.append((messages, settings))
-        return AgentResult(text="fake response")
+        return AgentResult(text=f"fake response: messages={len(messages)}")
 ```
 
 確認すること:
@@ -169,6 +169,16 @@ async def test_real_agent_text_response():
     ...
 ```
 
+`pytest.ini` に marker を定義し、通常実行では smoke を除外する。
+
+```ini
+[pytest]
+markers =
+    smoke: calls real external services
+    requires_api_key: requires API key environment variables
+asyncio_mode = auto
+```
+
 ## 6. テストデータ方針
 
 ### 6.1 一時ディレクトリ
@@ -242,13 +252,14 @@ URL 検証のテストは、network に依存しないように検証関数を�
 - `--reset-history` で対象 Guild の履歴を消せる。
 - `--show-history` で対象 Guild の履歴を表示できる。
 - `--fake-agent` を指定すると API key なしで動く。
+- `--fake-agent` の応答には message 件数など検証しやすい情報を含める。
 
 ## 8. CI 方針
 
 初期は以下を CI 対象にする。
 
 ```bash
-pytest tests/unit tests/service
+pytest tests/unit tests/service -m "not smoke"
 ```
 
 外部 API が必要な smoke test は CI の通常実行から外す。
