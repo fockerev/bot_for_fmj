@@ -8,9 +8,10 @@ dockerがインストール済みなこと
 ├── README.md
 ├── bot
 │   ├── cogs
-│   │   └── gpt.py
-│   ├── logging_config.json     ロギング設定
+│   │   └── chat.py
 │   ├── main.py                 main
+│   ├── modules                 Bot機能モジュール
+│   ├── tools                   ローカル確認用CLI
 │   ├── requirements.txt        依存ライブラリ
 │   └── setting.yaml            Botの設定
 ├── docker-compose.yaml
@@ -43,4 +44,4 @@ dockerがインストール済みなこと
 
 ## その他
 
-cogsファイル内にcogを定義したファイルを追加することで動作を追加できる
+初期移行後は `cogs.chat` のみを読み込む allowlist 構成。

@@ -103,9 +103,10 @@ CLI で確認すること:
 | 対象 | 観点 |
 | --- | --- |
 | `MessageParser` | mention 除去、本文抽出、返信参照、添付画像 URL、本文中画像 URL、未対応拡張子 |
-| `SessionStore` | Guild 別保存、復元、履歴上限、破損 JSON fallback、存在しない session の初期化 |
+| `AgentService` | app 独自 `ChatMessage` から Agent Framework `Message` / `Content` へ変換できる |
+| `SessionStore` | Guild 別保存、復元、履歴上限、破損 JSON fallback、破損 JSON `.bak` 退避、UTC timestamp、存在しない session の初期化 |
 | `GuildConfigManager` | デフォルト設定、Guild 別 model、custom system prompt、reset |
-| `Config` | `setting.yaml` 読み込み、旧 `default_system_promt` 互換、必須項目不足時の error |
+| `Config` | `setting.yaml` 読み込み、旧 `default_system_promt` 互換、旧 `gpt.image_resolution` の `low/high` 変換、必須項目不足時の error |
 | `ChatModels` | JSON serialize / deserialize、画像 part、日時変換 |
 
 ### 4.2 Service Test
@@ -117,7 +118,9 @@ CLI で確認すること:
 | `ChatService` | Guild A / Guild B の session 分離 |
 | `ChatService` | 画像付き message の content part 化 |
 | `ChatService` | Agent error 時のユーザー向けエラーメッセージ |
+| `ChatService` | Agent error 時に `save_failed_user_message` に従って user message だけ保存 / 破棄する |
 | `ChatService` | 履歴上限超過時の切り詰め |
+| `ChatCog` | Discord 返信が長い場合に 1900 文字程度で分割送信する |
 
 ### 4.3 CLI Smoke Test
 
@@ -215,6 +218,10 @@ URL 検証のテストは、network に依存しないように検証関数を�
 - 本文中の画像 URL を抽出できる。
 - `png` / `jpg` / `jpeg` / `webp` / `gif` を許可する。
 - `pdf` / `zip` / 通常ページ URL を拒否する。
+- `http` URL を拒否する。
+- 画像 URL は最大4件までに制限する。
+- 重複 URL を除去する。
+- unsupported attachment が混ざる場合は request 全体を validation error にする。
 - URL 抽出後、本文から画像 URL を除去する。
 
 ### 7.2 SessionStore
@@ -225,7 +232,8 @@ URL 検証のテストは、network に依存しないように検証関数を�
 - Guild A と Guild B を別ファイルに保存する。
 - 履歴数が上限を超えたら古い user / assistant message を切り詰める。
 - system prompt は通常履歴に混ぜず session 属性として保持する。
-- 破損 JSON を読んだ場合は warning log を出して新規 session に fallback する。
+- 破損 JSON を読んだ場合は warning log を出し、`.bak` に退避して新規 session に fallback する。
+- timestamp は UTC timezone aware ISO 文字列で保存される。
 
 ### 7.3 ChatService
 
@@ -253,6 +261,14 @@ URL 検証のテストは、network に依存しないように検証関数を�
 - `--show-history` で対象 Guild の履歴を表示できる。
 - `--fake-agent` を指定すると API key なしで動く。
 - `--fake-agent` の応答には message 件数など検証しやすい情報を含める。
+
+### 7.6 AgentService
+
+- system message を Agent Framework agent の `instructions` に分離できる。
+- user / assistant message を `agent_framework.Message` に変換できる。
+- text part を `Content.from_text()` 相当へ変換できる。
+- image URL part を `Content.from_uri()` 相当へ変換できる。
+- 画像 URL の拡張子から `media_type` を推定できる。
 
 ## 8. CI 方針
 

@@ -1,10 +1,7 @@
 discord.py==2.3.2
-openai
-google-generativeai==0.8.3
-python-dotenv==1.1.0
+audioop-lts
+agent-framework
+python-dotenv>=1,<2
 PyYAML==6.0.2
-urlextract==1.9.0
-semantic-kernel==1.38.0
-riotwatcher==3.2.5
-requests==2.31.0
-aiofiles==24.1.0
+pytest
+pytest-asyncio

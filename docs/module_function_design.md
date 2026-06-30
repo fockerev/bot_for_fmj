@@ -210,8 +210,9 @@ bot/
 
 処理:
 
-1. `SessionStore.get_session(guild_id)` を呼ぶ。
-2. user / assistant 履歴を短縮表示する。
+1. `GuildConfigManager.get_effective_config(guild_id)` を呼ぶ。
+2. `SessionStore.get_session(guild_id, effective_config.system_prompt)` を呼ぶ。
+3. user / assistant 履歴を短縮表示する。
 
 ### `/history_reset`
 
@@ -244,7 +245,8 @@ bot/
 処理:
 
 1. Guild custom prompt を削除する。
-2. default system prompt を session に反映する。
+2. `GuildConfigManager.get_effective_config(guild_id)` で default system prompt を解決する。
+3. default system prompt を session に反映する。
 
 ### `/config`
 
@@ -374,6 +376,8 @@ bot/
 
 - Agent error 時は `bot.save_failed_user_message` に従う。初期値は `true`。
 - Agent error 時に user message を保存した場合も assistant fallback message は保存しない。
+- Agent error かつ `bot.save_failed_user_message == true` の場合は、user message 追加済み session を `save_session()` してから fallback response を返す。
+- Agent error かつ `bot.save_failed_user_message == false` の場合は、user message を session から取り除き、fallback response を返す。
 - Agent response が空なら fallback text を使う。
 - save 失敗時は error log。可能なら response は返す。
 
@@ -440,11 +444,12 @@ class AgentService(Protocol):
 
 処理:
 
-1. `convert_messages(messages, settings)` を呼ぶ。
-2. `provider + model` に対応する Agent を作成または cache から取得する。
-3. Microsoft Agent Framework で実行する。
-4. text response を抽出する。
-5. `AgentResult(text=...)` を返す。
+1. `convert_messages(messages, settings)` で `instructions` と Agent Framework `Message` を作る。
+2. `provider + model` に対応する `OpenAIChatClient` を作成または cache から取得する。
+3. `client.as_agent(instructions=...)` で Agent を作る。
+4. `agent.run(messages)` で Microsoft Agent Framework 経由の応答を生成する。
+5. `AgentResponse.text` から text response を抽出する。
+6. `AgentResult(text=...)` を返す。
 
 エラー:
 
@@ -452,18 +457,20 @@ class AgentService(Protocol):
 - provider 未対応は `AgentConfigurationError`。
 - API 呼び出し失敗は `AgentExecutionError`。
 
-### `convert_messages(messages, settings) -> Any`
+### `convert_messages(messages, settings) -> tuple[str | None, list[agent_framework.Message]]`
 
 | In | Out |
 | --- | --- |
-| `list[ChatMessage]`, `AgentSettings` | Agent Framework 用 message |
+| `list[ChatMessage]`, `AgentSettings` | `(instructions, Agent Framework message list)` |
 
 仕様:
 
-- `text` part は text input へ変換する。
-- `image_url` part は multimodal image input へ変換する。
+- `system` message は `instructions` として分離する。
+- `text` part は `Content.from_text()` へ変換する。
+- `image_url` part は `Content.from_uri()` へ変換する。
+- 画像 URL の拡張子から `media_type` を推定する。
 - query string 付き画像 URL はそのまま Agent へ渡せるが、log には query を出さない。
-- Microsoft Agent Framework の具体 message API は実装直前に公式ドキュメントで確認し、この関数内に閉じ込める。
+- `image_detail` は session JSON に保持するが、Agent Framework 変換では初期対応として使用しない。
 
 ### `FakeAgentService.generate(messages, settings) -> AgentResult`
 
@@ -674,6 +681,7 @@ class MCPConfig:
 
 - `bot.default_system_promt` がある場合は `default_system_prompt` として読む。
 - 旧 `gpt.openai_model`、`gpt.ai_provider`、`gpt.max_token`、`gpt.temperature`、`gpt.image_resolution` は `agent.*` の fallback として読む。
+- 旧 `gpt.image_resolution` は `0 -> low`、`1 -> high` として `agent.image_detail` に変換する。
 - 旧 `bot.save_api_response`、`bot.save_image_input` は初期移行では廃止し、設定としては使用しない。
 
 ## 4.9 `bot/modules/logging_service.py`
@@ -790,7 +798,8 @@ sequenceDiagram
     S->>Store: save_session(session)
     Store-->>S: ok
     S-->>C: ChatResponse(text)
-    C->>D: channel.send(text)
+    C->>C: split text into <= 1900 char chunks
+    C->>D: channel.send(each chunk)
 ```
 
 ### 5.2 Discord 画像チャット

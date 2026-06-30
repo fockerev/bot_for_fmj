@@ -42,22 +42,22 @@
 
 ## 3. 現状整理
 
-### 3.1 現状の主要ファイル
+### 3.1 移行前の主要ファイルと移行後の扱い
 
-| ファイル | 現状の責務 | 初期移行での扱い |
+| ファイル | 移行前の責務 | 初期移行後の扱い |
 | --- | --- | --- |
 | `bot/main.py` | Discord Bot 起動、Cog 読み込み | 維持 |
-| `bot/cogs/gpt.py` | mention 応答、`/search`、周期履歴リセット | チャット Cog として簡素化 |
-| `bot/modules/gpt_service.py` | 会話履歴、画像、検索、AI 応答 | チャット専用 service に再構成 |
-| `bot/modules/ai_service.py` | Semantic Kernel 経由の OpenAI / Gemini 呼び出し | Agent Framework adapter に置換 |
-| `bot/modules/enhanced_history_manager.py` | SK reducer と履歴永続化 | framework 非依存の session store に置換 |
+| `bot/cogs/gpt.py` | mention 応答、`/search`、周期履歴リセット | `bot/cogs/chat.py` に置換して削除 |
+| `bot/modules/gpt_service.py` | 会話履歴、画像、検索、AI 応答 | `chat_service.py` に置換して削除 |
+| `bot/modules/ai_service.py` | Semantic Kernel 経由の OpenAI / Gemini 呼び出し | `agent_service.py` に置換して削除 |
+| `bot/modules/enhanced_history_manager.py` | SK reducer と履歴永続化 | `session_store.py` に置換して削除 |
 | `bot/modules/guild_config.py` | Guild 別設定 JSON | 維持・簡素化 |
 | `bot/modules/config.py` | YAML 設定読み込み | 維持・必要最小限に整理 |
-| `bot/modules/commands.py` | Discord コマンドと設定 UI | 最小コマンドのみに整理 |
+| `bot/modules/commands.py` | Discord コマンドと設定 UI | `ChatCog` の最小コマンドへ置換して削除 |
 | `bot/modules/message_parser.py` | mention 除去、返信、画像 URL 抽出 | テキストと画像入力の抽出に絞って維持 |
-| `bot/modules/mcp_client.py` | MCP stdio client | 初期移行では未使用として残すか退避 |
-| `bot/modules/web_search_plugin.py` | SK plugin | 初期移行では削除対象 |
-| `bot/cogs/riot_api.py` | Riot API / AI レビュー | 移行対象外。読み込まない |
+| `bot/modules/mcp_client.py` | MCP stdio client | 初期移行では削除。MCP再追加時に新tool interfaceで再実装 |
+| `bot/modules/web_search_plugin.py` | SK plugin | 削除 |
+| `bot/cogs/riot_api.py` | Riot API / AI レビュー | 移行対象外として削除 |
 
 ### 3.2 現状の Semantic Kernel 依存
 
@@ -119,7 +119,7 @@ SessionStore / ConfigStore / Logging
 | `bot/modules/chat_service.py` | Discord 入力から Agent 応答までのアプリケーション処理 |
 | `bot/modules/logging_service.py` | ログ出力の初期化、ファイル出力設定 |
 
-既存ファイルを活かす場合は、`gpt_service.py` を `chat_service.py` 相当に薄くする。ただし Semantic Kernel 移行を明確にするなら、新規 `chat_service.py` を作り、旧 `gpt_service.py` を段階的に外す方が安全。
+Semantic Kernel 移行を明確にするため、新規 `chat_service.py` を作成し、旧 `gpt_service.py` は削除する。
 
 ### 5.2 最小 message model
 
@@ -127,8 +127,8 @@ SessionStore / ConfigStore / Logging
 
 ```python
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Literal, Optional
+from datetime import datetime, timezone
+from typing import Any, Literal, Optional
 
 Role = Literal["system", "user", "assistant"]
 ContentType = Literal["text", "image_url"]
@@ -151,6 +151,7 @@ class GuildSession:
     guild_id: int
     system_prompt: str
     messages: list[ChatMessage] = field(default_factory=list)
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 ```
 
 assistant の応答は通常 `text` part 1件として保存する。画像 URL は Discord CDN URL または本文中の画像 URL を保存し、`detail` には `low` / `high` などの画像解像度設定を入れる。
@@ -172,6 +173,7 @@ class AgentSettings:
 @dataclass
 class AgentResult:
     text: str
+    raw: Any | None = None
 
 class AgentService(Protocol):
     async def generate(
@@ -410,9 +412,9 @@ Riot API レビューは移行対象外とし、事後対応でも復旧しな�
 ### Phase 3: 旧 Semantic Kernel 実装の削除
 
 - `semantic-kernel` 依存を `requirements.txt` から削除する。
-- `web_search_plugin.py` を初期構成から外す。
+- `web_search_plugin.py` を削除する。
 - `enhanced_history_manager.py` を `session_store.py` に置き換える。
-- `gpt_service.py` の不要処理を削除または `chat_service.py` に置換する。
+- `gpt_service.py` を `chat_service.py` に置換して削除する。
 
 ### Phase 4: 履歴要約追加
 
@@ -424,7 +426,7 @@ Riot API レビューは移行対象外とし、事後対応でも復旧しな�
 
 ### Phase 5: MCP 追加
 
-- `MCPClient` を新しい tool interface に接続する。
+- MCP client を新しい tool interface として再実装する。
 - `/search` を復活させる。
 - 必要に応じて通常チャットへの tool calling を有効化する。
 
@@ -476,7 +478,7 @@ Riot API レビューは移行対象外とし、事後対応でも復旧しな�
 - `bot/modules/session_store.py`
 - `bot/modules/agent_service.py`
 - `bot/modules/chat_service.py`
-- `bot/cogs/chat.py` または既存 `gpt.py` の簡素化
+- `bot/cogs/chat.py`
 - 画像添付 / 画像 URL を扱う `MessageParser` の最小化
 - `setting.yaml` の最小構成への更新
 - `requirements.txt` から不要依存を削除
@@ -496,16 +498,18 @@ Riot API レビューは移行対象外とし、事後対応でも復旧しな�
 
 `docs/microsoft_agent_framework_migration_missing_info.md` の確認結果として、初期実装では以下を採用する。
 
-### 13.1 未確定として残す事項
+### 13.1 Agent Framework API
 
-Microsoft Agent Framework の Python API は実装直前に公式ドキュメントで確認する。特に以下は adapter 実装時に確定する。
+初期実装では `agent-framework==1.9.0` を使用する。
 
-- Python パッケージ名とバージョン
-- Agent / client の作成方法
-- OpenAI 接続方法
-- system instruction の渡し方
-- text / image URL の message 形式
-- `max_tokens` / `temperature` の指定方法
+- Python パッケージ名: `agent-framework`
+- OpenAI 接続: `agent_framework.openai.OpenAIChatClient`
+- Agent 作成: `OpenAIChatClient.as_agent(instructions=...)`
+- Agent 実行: `Agent.run(messages)`
+- text message: `agent_framework.Content.from_text()`
+- image URL message: `agent_framework.Content.from_uri()`
+- 応答本文: `AgentResponse.text`
+- `max_tokens` / `temperature`: `default_options` で指定
 
 これらは `AgentService` 内に閉じ込め、`ChatService`、`SessionStore`、`MessageParser` には漏らさない。
 
@@ -533,7 +537,7 @@ CLI の fake agent 実行では API key を不要とする。real agent 実行�
 
 ### 13.5 Discord 返信長
 
-Discord の message 上限を超える応答は 1900 文字程度で分割送信する。切り詰めは行わない。
+Discord の message 上限を超える応答は 1900 文字程度で分割送信する。切り詰めは行わない。分割責務は Discord adapter である `ChatCog` に置き、`ChatResponse.text` は完全な応答本文を保持する。
 
 ### 13.6 SessionStore
 
