@@ -10,6 +10,7 @@ Discord で動作する Python 製チャットボットです。Bot がメンシ
 | テキスト / 画像入力 | 本文、Discord 添付画像、本文中の HTTPS 画像 URL に対応 |
 | Guild 別履歴 | `bot/data/sessions/guild_<guild_id>.json` に会話履歴を保存 |
 | Guild 別設定 | `bot/data/guild_configs.json` にモデル設定や system prompt を保存 |
+| X MCP 連携 | X API MCP server を Agent tool として利用 |
 | Slash / hybrid command | 履歴表示、履歴削除、キャラクター設定、設定確認など |
 | ローカル CLI | Discord を起動せずチャット処理を確認可能 |
 
@@ -47,7 +48,13 @@ Discord で動作する Python 製チャットボットです。Bot がメンシ
 ## セットアップ
 
 1. Discord Developer Portal で Bot の intents を許可する。
-2. `docker-compose.yaml` または実行環境に以下の環境変数を設定する。
+2. `.env.example` を元に `.env` を作成し、環境変数を設定する。
+
+```bash
+cp .env.example .env
+```
+
+3. `docker-compose.yaml` または実行環境に以下の環境変数を設定する。
 
 | key | 必須 | 値 |
 | --- | --- | --- |
@@ -56,8 +63,13 @@ Discord で動作する Python 製チャットボットです。Bot がメンシ
 | `GUILD_ID` | yes | 動作させる Guild ID。カンマ区切りで複数指定可能 |
 | `BOT_PREFIX` | no | prefix command 用。未指定時は `/` |
 | `TZ` | no | timezone。例: `Asia/Tokyo` |
+| `INSTALL_NODE` | no | OAuth xurl bridge を使う場合のみ `true`。token-only HTTP route では `false` のままでよい |
+| `X_CLIENT_ID` | MCP 使用時 | X app の OAuth 2.0 Client ID |
+| `X_CLIENT_SECRET` | MCP 使用時 | X app の OAuth 2.0 Client Secret |
+| `X_BEARER_TOKEN` | token-only MCP 使用時 | X app の App-only Bearer token |
+| `X_REDIRECT_URI` | MCP 使用時 | X app に登録した OAuth redirect URI。未指定時は `http://localhost:8080/callback` |
 
-3. コンテナを起動する。
+4. コンテナを起動する。
 
 ```bash
 docker compose up -d
@@ -90,9 +102,67 @@ docker compose down
 | `agent` | `provider`, `model`, `max_tokens`, `temperature`, `image_detail` | Agent 実行設定 |
 | `bot` | `history_size`, `save_failed_user_message`, `default_system_prompt` | 履歴と system prompt 設定 |
 | `logging` | `level`, `file` | ログ設定 |
-| `mcp` | `enabled`, `command`, `args`, `search_result_limit` | 現状は読み込みのみ |
+| `mcp` | `enabled`, `servers`, `search_result_limit` | MCP tool 設定 |
 
 現状の Agent 実行 provider は `openai` のみ対応しています。
+
+## X MCP 連携
+
+`bot/setting.yaml` の `mcp.enabled` を `true` にすると、Microsoft Agent Framework の MCP tool 経由で X API MCP server を Agent tool として利用します。OAuth user context が必要な場合は X 公式の `xurl` bridge を使います。
+
+```yaml
+mcp:
+  enabled: true
+  servers:
+    - name: "xapi"
+      transport: "stdio"
+      command: "npx"
+      args: ["-y", "@xdevplatform/xurl", "mcp", "https://api.x.com/mcp"]
+      env:
+        CLIENT_ID: "X_CLIENT_ID"
+        CLIENT_SECRET: "X_CLIENT_SECRET"
+        REDIRECT_URI: "X_REDIRECT_URI"
+      approval_mode: "never_require"
+      request_timeout: 300
+```
+
+初回 OAuth ログインにはブラウザが必要です。サーバーや Docker など headless 環境では、事前に `xurl auth oauth2 --headless` で認証してください。Docker 実行時は `xurl-cache` volume を `/root/.xurl` に mount し、認証済み token cache を永続化します。
+
+X Developer Portal では、使用する redirect URI を OAuth 2.0 設定に登録してください。既定値は X 公式 docs と同じ `http://localhost:8080/callback` です。
+
+OAuth bridge は `npx` を使うため、Docker build 時に Node.js/npm が必要です。このルートを使う場合だけ `.env` で `INSTALL_NODE=true` にしてください。
+
+Client ID / Secret がなく App-only Bearer token だけを使う場合は、OAuth bridge ではなく hosted HTTP MCP server へ直接接続します。この方式は読み取り中心で、ユーザー本人としての操作や書き込み系 tool は使えません。
+
+```yaml
+mcp:
+  enabled: true
+  servers:
+    - name: "xapi"
+      transport: "http"
+      url: "https://api.x.com/mcp"
+      headers:
+        Authorization: "X_BEARER_TOKEN"
+      approval_mode: "never_require"
+      request_timeout: 300
+```
+
+他の MCP server も `mcp.servers` に追加できます。
+
+```yaml
+mcp:
+  enabled: true
+  servers:
+    - name: "xapi"
+      transport: "http"
+      url: "https://api.x.com/mcp"
+      headers:
+        Authorization: "X_BEARER_TOKEN"
+    - name: "filesystem"
+      transport: "stdio"
+      command: "npx"
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+```
 
 ## Discord コマンド
 

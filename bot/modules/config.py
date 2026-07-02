@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -34,11 +34,24 @@ class LoggingConfig:
 
 
 @dataclass
-class MCPConfig:
-    enabled: bool
+class MCPServerConfig:
+    name: str
+    transport: str
     command: str
     args: list[str]
-    search_result_limit: int
+    url: str | None = None
+    env: dict[str, str] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict)
+    allowed_tools: list[str] = field(default_factory=list)
+    approval_mode: str = "never_require"
+    request_timeout: int | None = 300
+
+
+@dataclass
+class MCPConfig:
+    enabled: bool
+    servers: list[MCPServerConfig] = field(default_factory=list)
+    search_result_limit: int = 3
 
 
 @dataclass
@@ -85,12 +98,7 @@ class AppConfig:
                     level=str(logging_data.get("level", "INFO")),
                     file=str(logging_data.get("file", "logs/bot.log")),
                 ),
-                mcp=MCPConfig(
-                    enabled=bool(mcp_data.get("enabled", False)),
-                    command=str(mcp_data.get("command", "node")),
-                    args=list(mcp_data.get("args", [])),
-                    search_result_limit=int(mcp_data.get("search_result_limit", 3)),
-                ),
+                mcp=_mcp_config(mcp_data),
             )
         except KeyError as exc:
             raise ConfigError(f"required config key missing: {exc}") from exc
@@ -119,6 +127,72 @@ def _bot_data(data: dict[str, Any]) -> dict[str, Any]:
     bot.setdefault("history_size", 16)
     bot.setdefault("save_failed_user_message", True)
     return bot
+
+
+def _mcp_config(data: dict[str, Any]) -> MCPConfig:
+    enabled = bool(data.get("enabled", False))
+    raw_servers = data.get("servers")
+    if raw_servers is None:
+        raw_servers = [_default_mcp_server_data(data)]
+    servers = [_mcp_server_config(server_data) for server_data in list(raw_servers or [])]
+    return MCPConfig(
+        enabled=enabled,
+        servers=servers,
+        search_result_limit=int(data.get("search_result_limit", 3)),
+    )
+
+
+def _default_mcp_server_data(data: dict[str, Any]) -> dict[str, Any]:
+    default_server = _xapi_stdio_defaults()
+    for key in (
+        "name",
+        "transport",
+        "command",
+        "args",
+        "url",
+        "env",
+        "headers",
+        "allowed_tools",
+        "approval_mode",
+        "request_timeout",
+    ):
+        if key in data:
+            default_server[key] = data[key]
+    return default_server
+
+
+def _mcp_server_config(data: dict[str, Any]) -> MCPServerConfig:
+    server_data = _xapi_stdio_defaults()
+    server_data.update(dict(data or {}))
+    return MCPServerConfig(
+        name=str(server_data["name"]),
+        transport=str(server_data["transport"]),
+        command=str(server_data.get("command", "")),
+        args=list(server_data.get("args") or []),
+        url=str(server_data["url"]) if server_data.get("url") else None,
+        env={str(key): str(value) for key, value in dict(server_data.get("env") or {}).items()},
+        headers={str(key): str(value) for key, value in dict(server_data.get("headers") or {}).items()},
+        allowed_tools=[str(value) for value in list(server_data.get("allowed_tools") or [])],
+        approval_mode=str(server_data.get("approval_mode", "never_require")),
+        request_timeout=(
+            int(server_data["request_timeout"]) if server_data.get("request_timeout") is not None else 300
+        ),
+    )
+
+
+def _xapi_stdio_defaults() -> dict[str, Any]:
+    return {
+        "name": "xapi",
+        "transport": "stdio",
+        "command": "npx",
+        "args": ["-y", "@xdevplatform/xurl", "mcp", "https://api.x.com/mcp"],
+        "url": None,
+        "env": {},
+        "headers": {},
+        "allowed_tools": [],
+        "approval_mode": "never_require",
+        "request_timeout": 300,
+    }
 
 
 def _image_detail_from_legacy(value: Any) -> str:

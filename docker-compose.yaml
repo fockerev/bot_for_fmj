@@ -1,12 +1,23 @@
 services:
   bot:
-    build: 
+    build:
       context: .
+      dockerfile: dockerfile
       network: host
+      args:
+        INSTALL_NODE: ${INSTALL_NODE:-false}
     environment:
-      TZ: Asia/Tokyo
-      BOT_PREFIX: /
-      DISCORD_BOT_TOKEN: YOUR_TOKEN
-      OPENAI_API_KEY: YOUR_TOKEN
-      GUILD_ID: YOUR_SERVER_ID
+      TZ: ${TZ:-Asia/Tokyo}
+      BOT_PREFIX: ${BOT_PREFIX:-/}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GUILD_ID: ${GUILD_ID}
+      X_CLIENT_ID: ${X_CLIENT_ID:-}
+      X_CLIENT_SECRET: ${X_CLIENT_SECRET:-}
+      X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
+      X_REDIRECT_URI: ${X_REDIRECT_URI:-http://localhost:8080/callback}
+    volumes:
+      - xurl-cache:/root/.xurl
 
+volumes:
+  xurl-cache:

@@ -243,7 +243,8 @@ ChatService から Discord adapter へ返す DTO。
 | `AgentConfig` | `provider`, `model`, `max_tokens`, `temperature`, `image_detail` |
 | `BotConfig` | `history_size`, `save_failed_user_message`, `default_system_prompt` |
 | `LoggingConfig` | `level`, `file` |
-| `MCPConfig` | `enabled`, `command`, `args`, `search_result_limit` |
+| `MCPServerConfig` | `name`, `transport`, `command`, `args`, `url`, `env`, `headers`, `allowed_tools`, `approval_mode`, `request_timeout` |
+| `MCPConfig` | `enabled`, `servers`, `search_result_limit` |
 | `AppConfig` | `agent`, `bot`, `logging`, `mcp` |
 
 ### `AppConfig.load(path)`
@@ -497,7 +498,11 @@ session の `system_prompt` から system message を作成し、session message
 
 ### `build_agent_settings(effective_config)`
 
-`EffectiveGuildConfig` から `AgentSettings` を作成する。
+`EffectiveGuildConfig` から `AgentSettings` を作成する。`AppConfig.mcp` から作成した `MCPServerSettings` も含める。
+
+### `build_mcp_server_settings()`
+
+`AppConfig.mcp` から `list[MCPServerSettings]` を作成する。`mcp.enabled` が false の場合は空 list を返す。
 
 ### `_save_session_best_effort(session)`
 
@@ -510,13 +515,15 @@ session の `system_prompt` から system message を作成し、session message
 - Agent 実行 interface を定義する。
 - Microsoft Agent Framework の具体 API を adapter 内に閉じ込める。
 - アプリ内 `ChatMessage` を Agent Framework `Message` / `Content` へ変換する。
+- `mcp.enabled` の場合に MCP tool を生成し、Agent へ渡す。
 - テスト用 fake service を提供する。
 
 ### dataclass
 
 | クラス | 項目 |
 | --- | --- |
-| `AgentSettings` | `provider`, `model`, `temperature`, `max_tokens`, `image_detail` |
+| `AgentSettings` | `provider`, `model`, `temperature`, `max_tokens`, `image_detail`, `mcp_servers` |
+| `MCPServerSettings` | `name`, `transport`, `command`, `args`, `url`, `env`, `headers`, `allowed_tools`, `approval_mode`, `request_timeout` |
 | `AgentResult` | `text`, `raw` |
 
 ### exceptions
@@ -547,9 +554,10 @@ API key 環境変数名と、`(provider, model)` を key にした `OpenAIChatCl
 2. API key 環境変数が空なら `AgentConfigurationError`。
 3. `_get_client()` で `OpenAIChatClient` を取得する。
 4. `convert_messages()` で system instructions と run messages へ変換する。
-5. `client.as_agent()` で Agent を作成する。
-6. `agent.run(run_messages)` を await する。
-7. `response.text` を `AgentResult.text` に詰める。
+5. `settings.mcp_servers` の各 server から `build_mcp_tool()` で MCP tool を作成し、async context を開始する。
+6. `client.as_agent()` で Agent を作成する。MCP tools がある場合は `tools` に渡す。
+7. `agent.run(run_messages)` を await する。
+8. `response.text` を `AgentResult.text` に詰める。
 
 `AgentConfigurationError` 以外の例外は `AgentExecutionError` へ包む。
 
@@ -573,6 +581,31 @@ URL path の拡張子から media type を推定する。
 | `.webp` | `image/webp` |
 | `.gif` | `image/gif` |
 | その他 | `None` |
+
+#### `build_mcp_tool(settings)`
+
+`MCPServerSettings` から Agent Framework の MCP tool を作成する。
+
+| `transport` | 生成 tool | 必須設定 |
+| --- | --- | --- |
+| `stdio` | `MCPStdioTool` | `name`, `command`, `args` |
+| `http`, `streamable_http` | `MCPStreamableHTTPTool` | `name`, `url` |
+
+X API MCP server は token-only 構成では `http` transport で `https://api.x.com/mcp` へ直接接続する。OAuth user context が必要な場合は `stdio` transport で次の bridge を起動する。
+
+```text
+npx -y @xdevplatform/xurl mcp https://api.x.com/mcp
+```
+
+`env` は `{"CLIENT_ID": "X_CLIENT_ID"}` のような mapping とし、key を MCP 子プロセスへ渡す環境変数名、value を Bot 実行環境から読む環境変数名として扱う。
+
+#### `_build_child_env(env_mapping)`
+
+`env_mapping` に従い、Bot 実行環境から値が存在するものだけを子プロセス用 env dict へ変換する。
+
+#### `_build_header_provider(header_mapping)`
+
+HTTP MCP server 用の header provider を作成する。`headers` は `{"Authorization": "X_BEARER_TOKEN"}` のような mapping とし、value を Bot 実行環境から読む。`Authorization` の値が `Bearer ` で始まらない場合は自動で `Bearer ` を付与する。
 
 ### `FakeAgentService`
 
@@ -672,6 +705,8 @@ chat_service
 agent_service
   -> agent_framework
   -> agent_framework.openai
+  -> agent_framework.MCPStdioTool
+  -> agent_framework.MCPStreamableHTTPTool
   -> chat_models
 
 guild_config

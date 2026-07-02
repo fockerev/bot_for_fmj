@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from .agent_service import AgentExecutionError, AgentResult, AgentService, AgentSettings
+from .agent_service import AgentExecutionError, AgentResult, AgentService, AgentSettings, MCPServerSettings
 from .chat_models import ChatContentPart, ChatMessage, ChatRequest, ChatResponse
 from .config import AppConfig
 from .guild_config import GuildConfigManager
@@ -80,7 +80,28 @@ class ChatService:
             temperature=effective_config.temperature,
             max_tokens=effective_config.max_tokens,
             image_detail=effective_config.image_detail,
+            mcp_servers=self.build_mcp_server_settings(),
         )
+
+    def build_mcp_server_settings(self) -> list[MCPServerSettings]:
+        mcp = self.config.mcp
+        if not mcp.enabled:
+            return []
+        return [
+            MCPServerSettings(
+                name=server.name,
+                transport=server.transport,
+                command=server.command,
+                args=server.args,
+                url=server.url,
+                env=server.env,
+                headers=server.headers,
+                allowed_tools=server.allowed_tools,
+                approval_mode=server.approval_mode,
+                request_timeout=server.request_timeout,
+            )
+            for server in mcp.servers
+        ]
 
     def _save_session_best_effort(self, session) -> None:
         try:

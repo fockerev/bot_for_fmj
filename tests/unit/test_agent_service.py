@@ -1,6 +1,6 @@
 from agent_framework import Message
 
-from bot.modules.agent_service import AgentSettings, MicrosoftAgentService
+from bot.modules.agent_service import AgentSettings, MCPServerSettings, MicrosoftAgentService
 from bot.modules.chat_models import ChatContentPart, ChatMessage
 
 
@@ -49,3 +49,49 @@ def test_guess_image_media_type():
     assert service._guess_image_media_type("https://example.com/a.webp") == "image/webp"
     assert service._guess_image_media_type("https://example.com/a.gif") == "image/gif"
     assert service._guess_image_media_type("https://example.com/a.bin") is None
+
+
+def test_build_x_mcp_stdio_tool(monkeypatch):
+    monkeypatch.setenv("X_CLIENT_ID", "client-id")
+    monkeypatch.setenv("X_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("X_REDIRECT_URI", "http://localhost:8080/callback")
+    service = MicrosoftAgentService()
+
+    tool = service.build_mcp_tool(
+        MCPServerSettings(
+            name="xapi",
+            transport="stdio",
+            command="npx",
+            args=["-y", "@xdevplatform/xurl", "mcp", "https://api.x.com/mcp"],
+            url=None,
+            env={
+                "CLIENT_ID": "X_CLIENT_ID",
+                "CLIENT_SECRET": "X_CLIENT_SECRET",
+                "REDIRECT_URI": "X_REDIRECT_URI",
+            },
+            headers={},
+            allowed_tools=[],
+            approval_mode="never_require",
+            request_timeout=300,
+        )
+    )
+
+    assert tool.name == "xapi"
+    assert tool.command == "npx"
+    assert tool.args == ["-y", "@xdevplatform/xurl", "mcp", "https://api.x.com/mcp"]
+    assert tool.env == {
+        "CLIENT_ID": "client-id",
+        "CLIENT_SECRET": "client-secret",
+        "REDIRECT_URI": "http://localhost:8080/callback",
+    }
+    assert tool.approval_mode == "never_require"
+    assert tool.request_timeout == 300
+
+
+def test_build_mcp_headers_from_bearer_token(monkeypatch):
+    monkeypatch.setenv("X_BEARER_TOKEN", "token-value")
+    service = MicrosoftAgentService()
+
+    headers = service._build_headers({"Authorization": "X_BEARER_TOKEN"})
+
+    assert headers == {"Authorization": "Bearer token-value"}

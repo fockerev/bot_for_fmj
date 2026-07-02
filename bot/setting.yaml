@@ -16,6 +16,13 @@ logging:
 
 mcp:
   enabled: false
-  command: "node"
-  args: ["/app/mcp-server/dist/index.js"]
+  servers:
+    - name: "xapi"
+      transport: "http"
+      url: "https://api.x.com/mcp"
+      headers:
+        Authorization: "X_BEARER_TOKEN"
+      allowed_tools: []
+      approval_mode: "never_require"
+      request_timeout: 300
   search_result_limit: 3

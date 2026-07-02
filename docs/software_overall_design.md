@@ -19,6 +19,7 @@
 | Guild 別会話履歴 | `bot/data/sessions/guild_<guild_id>.json` に保存する |
 | Guild 別設定 | `bot/data/guild_configs.json` に provider / model / system prompt 差分を保存する |
 | チャット設定 | `bot/setting.yaml` から既定モデル、履歴数、ログ設定を読み込む |
+| X MCP 連携 | X API MCP server を Agent tool として追加する |
 | Slash / hybrid command | 履歴表示、履歴削除、キャラクター設定、設定確認、モデル変更を提供する |
 | ログ出力 | 標準出力とローテーションファイルへログを出力する |
 | ローカル CLI | Discord を介さず ChatService を実行確認できる |
@@ -27,7 +28,6 @@
 
 | 項目 | 現状 |
 | --- | --- |
-| MCP 連携 | 設定モデルは存在するが、実行経路では未使用 |
 | Web 検索 | 未実装 |
 | Riot API レビュー | 未実装 |
 | Gemini provider | legacy 設定読み込みの互換処理はあるが、Agent 実行は `openai` のみ対応 |
@@ -59,6 +59,10 @@ Docker イメージは `dockerfile` で定義し、`bot/` 配下を `/app` へ�
 | `GUILD_ID` | yes | command sync 対象 Guild ID。カンマ区切りで複数指定可能 |
 | `BOT_PREFIX` | no | prefix command 用。未指定時は `/` |
 | `TZ` | no | コンテナの timezone |
+| `X_CLIENT_ID` | MCP 使用時 | X app の OAuth 2.0 Client ID |
+| `X_CLIENT_SECRET` | MCP 使用時 | X app の OAuth 2.0 Client Secret |
+| `X_BEARER_TOKEN` | token-only MCP 使用時 | X app の App-only Bearer token |
+| `X_REDIRECT_URI` | MCP 使用時 | X app に登録した OAuth redirect URI |
 
 ## 4. アーキテクチャ
 
@@ -97,6 +101,7 @@ ChatService
   |
   +--> MicrosoftAgentService
         - app 内部モデルを Agent Framework 型へ変換
+        - mcp.enabled の場合は MCP tool を登録
         - OpenAIChatClient を使って Agent 実行
 ```
 
@@ -122,7 +127,7 @@ Discord 依存は `ChatCog`、Microsoft Agent Framework 依存は `MicrosoftAgen
 6. `SessionStore.get_session()` が Guild の履歴を読み込む。存在しない場合は新規作成する。
 7. `ChatService.build_user_message()` が user message を構築し、session に追加する。
 8. `ChatService.build_agent_messages()` が system message と履歴を結合する。
-9. `MicrosoftAgentService.generate()` が Agent Framework 形式に変換し、Agent を実行する。
+9. `MicrosoftAgentService.generate()` が Agent Framework 形式に変換し、MCP tool が有効なら Agent へ登録して実行する。
 10. 応答 text を assistant message として session に追加する。
 11. `SessionStore.save_session()` が履歴数を調整して JSON へ保存する。
 12. `ChatCog` が Discord の文字数制限に備えて応答を 1900 文字単位に分割し送信する。
@@ -169,7 +174,20 @@ Discord 依存は `ChatCog`、Microsoft Agent Framework 依存は `MicrosoftAgen
 | `bot` | `default_system_prompt` | 既定 system prompt |
 | `logging` | `level` | ログレベル |
 | `logging` | `file` | ログファイルパス |
-| `mcp` | `enabled`, `command`, `args`, `search_result_limit` | 現状は設定読み込みのみ |
+| `mcp` | `enabled` | MCP 連携の有効 / 無効 |
+| `mcp` | `servers` | MCP server 定義の配列 |
+| `mcp.servers[]` | `name`, `transport` | MCP tool 名と transport |
+| `mcp.servers[]` | `command`, `args` | stdio MCP server 起動コマンド |
+| `mcp.servers[]` | `url` | HTTP MCP server URL |
+| `mcp.servers[]` | `env` | 子プロセスへ渡す環境変数名の mapping |
+| `mcp.servers[]` | `headers` | HTTP MCP server へ渡す header の環境変数 mapping |
+| `mcp.servers[]` | `allowed_tools`, `approval_mode`, `request_timeout` | tool 制限、approval 方針、timeout |
+
+複数の MCP server は `mcp.servers` に追加する。X OAuth 連携は X 公式の `xurl` bridge を stdio MCP server として起動する。`CLIENT_ID` / `CLIENT_SECRET` / `REDIRECT_URI` は `env` mapping に従い、実行環境の `X_CLIENT_ID` / `X_CLIENT_SECRET` / `X_REDIRECT_URI` から bridge へ渡す。
+
+Docker 実行では `xurl` の OAuth token cache を `xurl-cache` volume として `/root/.xurl` に永続化する。headless 環境では事前に `xurl auth oauth2 --headless` で認証し、cache を volume から参照できる状態にする。
+
+App-only Bearer token のみ利用する場合は `transport: "http"` と `url: "https://api.x.com/mcp"` を指定し、`headers.Authorization` を `X_BEARER_TOKEN` へ mapping する。この方式はユーザー context を持たないため、利用可能 tool は読み取り系に限定される。
 
 legacy `gpt` セクション、および typo を含む `default_system_promt` は互換読み込みされる。
 
