@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import os
-from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
+from httpx import AsyncClient, Timeout
 from agent_framework import Content, MCPStdioTool, MCPStreamableHTTPTool, Message
 from agent_framework.openai import OpenAIChatClient
 
@@ -78,13 +78,8 @@ class MicrosoftAgentService:
         try:
             client = self._get_client(settings, api_key)
             instructions, run_messages = self.convert_messages(messages, settings)
-            async with AsyncExitStack() as stack:
-                tools = []
-                for mcp_server in settings.mcp_servers:
-                    mcp_tool = self.build_mcp_tool(mcp_server)
-                    await stack.enter_async_context(mcp_tool)
-                    tools.append(mcp_tool)
-
+            tools = [self.build_mcp_tool(mcp_server) for mcp_server in settings.mcp_servers]
+            try:
                 agent = client.as_agent(
                     instructions=instructions,
                     tools=tools or None,
@@ -95,6 +90,8 @@ class MicrosoftAgentService:
                     },
                 )
                 response = await agent.run(run_messages)
+            finally:
+                await self._close_mcp_http_clients(tools)
             return AgentResult(text=response.text or "", raw=response)
         except AgentConfigurationError:
             raise
@@ -168,7 +165,7 @@ class MicrosoftAgentService:
                 approval_mode=approval_mode,
                 allowed_tools=allowed_tools,
                 request_timeout=settings.request_timeout,
-                header_provider=self._build_header_provider(settings.headers),
+                http_client=self._build_http_client(settings.headers, settings.request_timeout),
             )
         raise AgentConfigurationError(f"unsupported mcp transport: {settings.transport}")
 
@@ -180,22 +177,29 @@ class MicrosoftAgentService:
                 child_env[child_key] = value
         return child_env
 
-    def _build_header_provider(self, header_mapping: dict[str, str]):
-        headers = self._build_headers(header_mapping)
-        if not headers:
-            return None
-        return lambda _: headers
-
     def _build_headers(self, header_mapping: dict[str, str]) -> dict[str, str]:
         headers: dict[str, str] = {}
         for header_name, source_env_key in header_mapping.items():
             value = os.getenv(source_env_key)
             if not value:
-                continue
+                raise AgentConfigurationError(f"{source_env_key} is required for mcp header {header_name}")
             if header_name.lower() == "authorization" and not value.lower().startswith("bearer "):
                 value = f"Bearer {value}"
             headers[header_name] = value
         return headers
+
+    def _build_http_client(self, header_mapping: dict[str, str], request_timeout: int | None) -> AsyncClient | None:
+        headers = self._build_headers(header_mapping)
+        if not headers:
+            return None
+        timeout = Timeout(request_timeout or 30, read=None)
+        return AsyncClient(headers=headers, follow_redirects=True, timeout=timeout)
+
+    async def _close_mcp_http_clients(self, tools: list[Any]) -> None:
+        for tool in tools:
+            http_client = getattr(tool, "_httpx_client", None)
+            if http_client is not None:
+                await http_client.aclose()
 
 
 class FakeAgentService:

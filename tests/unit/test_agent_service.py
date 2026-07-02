@@ -1,6 +1,6 @@
 from agent_framework import Message
 
-from bot.modules.agent_service import AgentSettings, MCPServerSettings, MicrosoftAgentService
+from bot.modules.agent_service import AgentConfigurationError, AgentSettings, MCPServerSettings, MicrosoftAgentService
 from bot.modules.chat_models import ChatContentPart, ChatMessage
 
 
@@ -95,3 +95,105 @@ def test_build_mcp_headers_from_bearer_token(monkeypatch):
     headers = service._build_headers({"Authorization": "X_BEARER_TOKEN"})
 
     assert headers == {"Authorization": "Bearer token-value"}
+
+
+async def test_build_http_mcp_tool_uses_authenticated_http_client(monkeypatch):
+    monkeypatch.setenv("X_BEARER_TOKEN", "token-value")
+    service = MicrosoftAgentService()
+
+    tool = service.build_mcp_tool(
+        MCPServerSettings(
+            name="xapi",
+            transport="http",
+            command="",
+            args=[],
+            url="https://api.x.com/mcp",
+            env={},
+            headers={"Authorization": "X_BEARER_TOKEN"},
+            allowed_tools=[],
+            approval_mode="never_require",
+            request_timeout=300,
+        )
+    )
+
+    assert tool._httpx_client is not None
+    assert tool._httpx_client.headers["authorization"] == "Bearer token-value"
+    await tool._httpx_client.aclose()
+
+
+def test_build_http_mcp_tool_requires_configured_header_env(monkeypatch):
+    monkeypatch.delenv("X_BEARER_TOKEN", raising=False)
+    service = MicrosoftAgentService()
+
+    try:
+        service.build_mcp_tool(
+            MCPServerSettings(
+                name="xapi",
+                transport="http",
+                command="",
+                args=[],
+                url="https://api.x.com/mcp",
+                env={},
+                headers={"Authorization": "X_BEARER_TOKEN"},
+                allowed_tools=[],
+                approval_mode="never_require",
+                request_timeout=300,
+            )
+        )
+    except AgentConfigurationError as exc:
+        assert "X_BEARER_TOKEN is required" in str(exc)
+    else:
+        raise AssertionError("expected missing mcp header env to fail")
+
+
+async def test_generate_closes_http_mcp_client(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("X_BEARER_TOKEN", "token-value")
+    service = MicrosoftAgentService()
+    recorded = {}
+
+    class FakeResponse:
+        text = "ok"
+
+    class FakeAgent:
+        async def run(self, messages, **kwargs):
+            recorded["messages"] = messages
+            recorded["kwargs"] = kwargs
+            return FakeResponse()
+
+    class FakeClient:
+        def as_agent(self, **kwargs):
+            recorded["agent_kwargs"] = kwargs
+            recorded["tool"] = kwargs["tools"][0]
+            return FakeAgent()
+
+    monkeypatch.setattr(service, "_get_client", lambda settings, api_key: FakeClient())
+
+    result = await service.generate(
+        [ChatMessage(role="user", content=[ChatContentPart(type="text", text="hello")])],
+        AgentSettings(
+            provider="openai",
+            model="gpt-test",
+            temperature=0.1,
+            max_tokens=100,
+            image_detail="low",
+            mcp_servers=[
+                MCPServerSettings(
+                    name="xapi",
+                    transport="http",
+                    command="",
+                    args=[],
+                    url="https://api.x.com/mcp",
+                    env={},
+                    headers={"Authorization": "X_BEARER_TOKEN"},
+                    allowed_tools=[],
+                    approval_mode="never_require",
+                    request_timeout=300,
+                )
+            ],
+        ),
+    )
+
+    assert result.text == "ok"
+    assert "function_invocation_kwargs" not in recorded["kwargs"]
+    assert recorded["tool"]._httpx_client.is_closed

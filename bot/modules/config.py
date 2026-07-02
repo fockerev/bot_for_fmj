@@ -51,7 +51,7 @@ class MCPServerConfig:
 class MCPConfig:
     enabled: bool
     servers: list[MCPServerConfig] = field(default_factory=list)
-    search_result_limit: int = 3
+    search_result_limit: int = 20
 
 
 @dataclass
@@ -138,7 +138,7 @@ def _mcp_config(data: dict[str, Any]) -> MCPConfig:
     return MCPConfig(
         enabled=enabled,
         servers=servers,
-        search_result_limit=int(data.get("search_result_limit", 3)),
+        search_result_limit=int(data.get("search_result_limit", 20)),
     )
 
 

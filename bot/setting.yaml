@@ -15,7 +15,7 @@ logging:
   file: "logs/bot.log"
 
 mcp:
-  enabled: false
+  enabled: true
   servers:
     - name: "xapi"
       transport: "http"
@@ -25,4 +25,4 @@ mcp:
       allowed_tools: []
       approval_mode: "never_require"
       request_timeout: 300
-  search_result_limit: 3
+  search_result_limit: 50
