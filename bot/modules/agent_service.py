@@ -21,6 +21,7 @@ class AgentSettings:
     max_tokens: int
     image_detail: str
     mcp_servers: list["MCPServerSettings"] = field(default_factory=list)
+    mcp_search_result_limit: int | None = None
 
 
 @dataclass
@@ -124,7 +125,22 @@ class MicrosoftAgentService:
                         )
                     )
             converted.append(Message(message.role, contents))
-        return instructions, converted
+        return self._append_mcp_instructions(instructions, settings), converted
+
+    def _append_mcp_instructions(self, instructions: str | None, settings: AgentSettings) -> str | None:
+        if not settings.mcp_servers or settings.mcp_search_result_limit is None:
+            return instructions
+
+        search_limit = max(settings.mcp_search_result_limit, 10)
+        mcp_instruction = (
+            "When using X MCP search tools, pass at least 10 as the search result count "
+            f"(such as max_results, count, limit, or similar parameters). Prefer {search_limit} "
+            "results unless the user explicitly asks for more. If the user asks for fewer than 10, "
+            "still request 10 or more from the tool, then summarize or show only the requested amount."
+        )
+        if not instructions:
+            return mcp_instruction
+        return f"{instructions}\n\n{mcp_instruction}"
 
     def _message_text(self, message: ChatMessage) -> str:
         return "\n".join(part.text or "" for part in message.content if part.type == "text").strip()

@@ -143,7 +143,7 @@ Discord 依存は `ChatCog`、Microsoft Agent Framework 依存は `MicrosoftAgen
 | `GuildSession` | Guild ID、system prompt、会話履歴、更新日時 |
 | `ChatRequest` | Discord 入力から作るチャット要求 |
 | `ChatResponse` | Discord へ返す応答 |
-| `AgentSettings` | Agent 実行時の provider / model / temperature / max_tokens / image_detail |
+| `AgentSettings` | Agent 実行時の provider / model / temperature / max_tokens / image_detail / MCP server / X MCP 検索件数 |
 | `GuildSpecificConfig` | Guild 固有の上書き設定 |
 | `EffectiveGuildConfig` | 既定設定と Guild 固有設定を合成した実効設定 |
 
@@ -176,6 +176,7 @@ Discord 依存は `ChatCog`、Microsoft Agent Framework 依存は `MicrosoftAgen
 | `logging` | `file` | ログファイルパス |
 | `mcp` | `enabled` | MCP 連携の有効 / 無効 |
 | `mcp` | `servers` | MCP server 定義の配列 |
+| `mcp` | `search_result_limit` | X MCP 検索 tool に渡す推奨取得件数。10 未満は Agent 指示時に 10 へ丸める |
 | `mcp.servers[]` | `name`, `transport` | MCP tool 名と transport |
 | `mcp.servers[]` | `command`, `args` | stdio MCP server 起動コマンド |
 | `mcp.servers[]` | `url` | HTTP MCP server URL |
@@ -188,6 +189,8 @@ Discord 依存は `ChatCog`、Microsoft Agent Framework 依存は `MicrosoftAgen
 Docker 実行では `xurl` の OAuth token cache を `xurl-cache` volume として `/root/.xurl` に永続化する。headless 環境では事前に `xurl auth oauth2 --headless` で認証し、cache を volume から参照できる状態にする。
 
 App-only Bearer token のみ利用する場合は `transport: "http"` と `url: "https://api.x.com/mcp"` を指定し、`headers.Authorization` を `X_BEARER_TOKEN` へ mapping する。この方式はユーザー context を持たないため、利用可能 tool は読み取り系に限定される。
+
+X MCP server が `mcp.servers` に含まれる場合、`ChatService` は `mcp.search_result_limit` を `AgentSettings.mcp_search_result_limit` へ渡す。`MicrosoftAgentService` は system instructions に X MCP 検索件数の補足を追加し、検索 tool へ 10 件以上を要求するよう Agent に指示する。ユーザーが少ない件数を求めた場合も tool 取得は 10 件以上とし、応答側で必要件数だけ要約・表示する。
 
 legacy `gpt` セクション、および typo を含む `default_system_promt` は互換読み込みされる。
 

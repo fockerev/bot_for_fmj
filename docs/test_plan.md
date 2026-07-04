@@ -104,9 +104,10 @@ CLI で確認すること:
 | --- | --- |
 | `MessageParser` | mention 除去、本文抽出、返信参照、添付画像 URL、本文中画像 URL、未対応拡張子 |
 | `AgentService` | app 独自 `ChatMessage` から Agent Framework `Message` / `Content` へ変換できる |
+| `AgentService` | X MCP 検索 tool 用の件数指示を system instructions に追加し、10 未満を 10 に丸める |
 | `SessionStore` | Guild 別保存、復元、履歴上限、破損 JSON fallback、破損 JSON `.bak` 退避、UTC timestamp、存在しない session の初期化 |
 | `GuildConfigManager` | デフォルト設定、Guild 別 model、custom system prompt、reset |
-| `Config` | `setting.yaml` 読み込み、旧 `default_system_promt` 互換、旧 `gpt.image_resolution` の `low/high` 変換、必須項目不足時の error |
+| `Config` | `setting.yaml` 読み込み、MCP server と `search_result_limit`、旧 `default_system_promt` 互換、旧 `gpt.image_resolution` の `low/high` 変換、必須項目不足時の error |
 | `ChatModels` | JSON serialize / deserialize、画像 part、日時変換 |
 
 ### 4.2 Service Test
@@ -119,6 +120,8 @@ CLI で確認すること:
 | `ChatService` | 画像付き message の content part 化 |
 | `ChatService` | Agent error 時のユーザー向けエラーメッセージ |
 | `ChatService` | Agent error 時に `save_failed_user_message` に従って user message だけ保存 / 破棄する |
+| `ChatService` | X MCP server がある場合だけ `mcp.search_result_limit` を Agent settings に反映する |
+| `ChatService` | X MCP 以外の MCP server だけなら検索件数指示を無効にする |
 | `ChatService` | 履歴上限超過時の切り詰め |
 | `ChatCog` | Discord 返信が長い場合に 1900 文字程度で分割送信する |
 
@@ -243,6 +246,7 @@ URL 検証のテストは、network に依存しないように検証関数を�
 - Guild 別 custom system prompt が使われる。
 - AgentService が例外を投げた場合、履歴を壊さずエラー文を返す。
 - AgentService の response が空の場合、fallback message を返す。
+- X MCP server がある場合だけ `mcp_search_result_limit` が Agent settings に入る。
 - 履歴上限に達した後も最新の会話が残る。
 
 ### 7.4 GuildConfig
@@ -269,6 +273,9 @@ URL 検証のテストは、network に依存しないように検証関数を�
 - text part を `Content.from_text()` 相当へ変換できる。
 - image URL part を `Content.from_uri()` 相当へ変換できる。
 - 画像 URL の拡張子から `media_type` を推定できる。
+- X MCP 検索件数指示を既存 system instructions に追記できる。
+- X MCP 検索件数が 10 未満の場合は 10 件に丸めて指示できる。
+- X MCP 検索件数が未設定の場合は system instructions を変更しない。
 
 ## 8. CI 方針
 

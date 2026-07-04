@@ -25,4 +25,4 @@ mcp:
       allowed_tools: []
       approval_mode: "never_require"
       request_timeout: 300
-  search_result_limit: 50
+  search_result_limit: 30

@@ -58,6 +58,7 @@ bot:
     assert server.args == ["-y", "@xdevplatform/xurl", "mcp", "https://api.x.com/mcp"]
     assert server.request_timeout == 300
     assert server.headers == {}
+    assert config.mcp.search_result_limit == 20
 
 
 def test_loads_x_mcp_env_mapping(tmp_path: Path):
@@ -76,6 +77,7 @@ bot:
   default_system_prompt: system
 mcp:
   enabled: true
+  search_result_limit: 30
   servers:
     - name: xapi
       transport: http
@@ -93,6 +95,7 @@ mcp:
     config = AppConfig.load(path)
 
     assert config.mcp.enabled is True
+    assert config.mcp.search_result_limit == 30
     assert len(config.mcp.servers) == 2
     assert config.mcp.servers[0].headers == {"Authorization": "X_BEARER_TOKEN"}
     assert config.mcp.servers[1].name == "filesystem"

@@ -74,13 +74,16 @@ class ChatService:
         return [system, *session.messages]
 
     def build_agent_settings(self, effective_config) -> AgentSettings:
+        mcp_servers = self.build_mcp_server_settings()
+        mcp_search_result_limit = self.config.mcp.search_result_limit if self._has_x_mcp_server(mcp_servers) else None
         return AgentSettings(
             provider=effective_config.provider,
             model=effective_config.model,
             temperature=effective_config.temperature,
             max_tokens=effective_config.max_tokens,
             image_detail=effective_config.image_detail,
-            mcp_servers=self.build_mcp_server_settings(),
+            mcp_servers=mcp_servers,
+            mcp_search_result_limit=mcp_search_result_limit,
         )
 
     def build_mcp_server_settings(self) -> list[MCPServerSettings]:
@@ -102,6 +105,14 @@ class ChatService:
             )
             for server in mcp.servers
         ]
+
+    def _has_x_mcp_server(self, servers: list[MCPServerSettings]) -> bool:
+        for server in servers:
+            if server.name == "xapi" or server.url == "https://api.x.com/mcp":
+                return True
+            if "https://api.x.com/mcp" in server.args:
+                return True
+        return False
 
     def _save_session_best_effort(self, session) -> None:
         try:

@@ -39,7 +39,8 @@ Discord で動作する Python 製チャットボットです。Bot がメンシ
 │   └── setting.yaml
 ├── docs
 │   ├── software_overall_design.md
-│   └── module_detail_design.md
+│   ├── module_detail_design.md
+│   └── test_plan.md
 ├── docker-compose.yaml
 ├── dockerfile
 └── tests
@@ -109,6 +110,8 @@ docker compose down
 ## X MCP 連携
 
 `bot/setting.yaml` の `mcp.enabled` を `true` にすると、Microsoft Agent Framework の MCP tool 経由で X API MCP server を Agent tool として利用します。OAuth user context が必要な場合は X 公式の `xurl` bridge を使います。
+
+`mcp.search_result_limit` は X MCP の検索 tool に渡す推奨取得件数です。X MCP は検索件数の最小値が 10 のため、10 未満に設定しても Agent への指示では 10 件以上を要求し、必要な件数だけ要約・表示します。現在の既定値は `30` です。
 
 ```yaml
 mcp:
@@ -212,9 +215,10 @@ python -m pytest -q
 
 - [ソフトウェア全体設計書](docs/software_overall_design.md)
 - [モジュール詳細設計書](docs/module_detail_design.md)
+- [テスト計画](docs/test_plan.md)
 
 ## 注意事項
 
 - `DISCORD_BOT_TOKEN` と `OPENAI_API_KEY` はリポジトリにコミットしないでください。
 - セッション履歴にはユーザー入力が保存されます。運用環境では `bot/data/sessions/` の取り扱いに注意してください。
-- 初期移行後は `cogs.chat` のみを読み込む構成です。
+- 現在は `cogs.chat` のみを読み込む構成です。

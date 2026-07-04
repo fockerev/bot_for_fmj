@@ -500,6 +500,8 @@ session の `system_prompt` から system message を作成し、session message
 
 `EffectiveGuildConfig` から `AgentSettings` を作成する。`AppConfig.mcp` から作成した `MCPServerSettings` も含める。
 
+X MCP server が設定されている場合のみ、`AppConfig.mcp.search_result_limit` を `AgentSettings.mcp_search_result_limit` に設定する。X MCP server の判定は server 名 `xapi`、HTTP URL `https://api.x.com/mcp`、または stdio args に同 URL を含むかで行う。X MCP server がない場合は `None` とし、Agent instructions には検索件数指示を追加しない。
+
 ### `build_mcp_server_settings()`
 
 `AppConfig.mcp` から `list[MCPServerSettings]` を作成する。`mcp.enabled` が false の場合は空 list を返す。
@@ -522,7 +524,7 @@ session の `system_prompt` から system message を作成し、session message
 
 | クラス | 項目 |
 | --- | --- |
-| `AgentSettings` | `provider`, `model`, `temperature`, `max_tokens`, `image_detail`, `mcp_servers` |
+| `AgentSettings` | `provider`, `model`, `temperature`, `max_tokens`, `image_detail`, `mcp_servers`, `mcp_search_result_limit` |
 | `MCPServerSettings` | `name`, `transport`, `command`, `args`, `url`, `env`, `headers`, `allowed_tools`, `approval_mode`, `request_timeout` |
 | `AgentResult` | `text`, `raw` |
 
@@ -554,10 +556,11 @@ API key 環境変数名と、`(provider, model)` を key にした `OpenAIChatCl
 2. API key 環境変数が空なら `AgentConfigurationError`。
 3. `_get_client()` で `OpenAIChatClient` を取得する。
 4. `convert_messages()` で system instructions と run messages へ変換する。
-5. `settings.mcp_servers` の各 server から `build_mcp_tool()` で MCP tool を作成し、async context を開始する。
+5. `settings.mcp_servers` の各 server から `build_mcp_tool()` で MCP tool を作成する。
 6. `client.as_agent()` で Agent を作成する。MCP tools がある場合は `tools` に渡す。
 7. `agent.run(run_messages)` を await する。
-8. `response.text` を `AgentResult.text` に詰める。
+8. HTTP MCP tool 用に作成した `httpx.AsyncClient` があれば close する。
+9. `response.text` を `AgentResult.text` に詰める。
 
 `AgentConfigurationError` 以外の例外は `AgentExecutionError` へ包む。
 
@@ -569,6 +572,8 @@ API key 環境変数名と、`(provider, model)` を key にした `OpenAIChatCl
 - text part は `Content.from_text()`。
 - image_url part は `Content.from_uri(uri, media_type=...)`。
 - `Message(message.role, contents)` を作成する。
+- `mcp_search_result_limit` が設定されている場合は、X MCP 検索 tool へ 10 件以上の取得件数を渡すよう `instructions` に補足する。
+- `mcp_search_result_limit < 10` の場合、Agent への推奨値は 10 に丸める。
 
 #### `_guess_image_media_type(url)`
 

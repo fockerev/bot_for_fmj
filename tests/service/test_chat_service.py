@@ -59,6 +59,7 @@ def test_chat_service_builds_multiple_mcp_server_settings(tmp_path):
         logging=LoggingConfig("INFO", "logs/test.log"),
         mcp=MCPConfig(
             enabled=True,
+            search_result_limit=50,
             servers=[
                 MCPServerConfig("xapi", "http", "", [], url="https://api.x.com/mcp"),
                 MCPServerConfig("filesystem", "stdio", "npx", ["-y", "server"]),
@@ -73,3 +74,28 @@ def test_chat_service_builds_multiple_mcp_server_settings(tmp_path):
     settings = service.build_agent_settings(guild_manager.get_effective_config(1))
 
     assert [server.name for server in settings.mcp_servers] == ["xapi", "filesystem"]
+    assert settings.mcp_search_result_limit == 50
+
+
+def test_chat_service_does_not_set_x_search_limit_without_x_mcp_server(tmp_path):
+    app_config = AppConfig(
+        agent=AgentConfig("openai", "gpt-test", 100, 0.1, "low"),
+        bot=BotConfig(16, True, "system"),
+        logging=LoggingConfig("INFO", "logs/test.log"),
+        mcp=MCPConfig(
+            enabled=True,
+            search_result_limit=50,
+            servers=[
+                MCPServerConfig("filesystem", "stdio", "npx", ["-y", "server"]),
+            ],
+        ),
+    )
+    logger = logging.getLogger(__name__)
+    guild_manager = GuildConfigManager(app_config, tmp_path, logger)
+    store = SessionStore(tmp_path / "sessions", app_config.bot.history_size, logger)
+    service = ChatService(app_config, guild_manager, store, FakeAgentService("ok"), logger)
+
+    settings = service.build_agent_settings(guild_manager.get_effective_config(1))
+
+    assert [server.name for server in settings.mcp_servers] == ["filesystem"]
+    assert settings.mcp_search_result_limit is None

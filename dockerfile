@@ -10,6 +10,6 @@ RUN if [ "$INSTALL_NODE" = "true" ]; then \
         && rm -rf /var/lib/apt/lists/*; \
     fi
 
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install -r requirements.txt
 
 CMD ["python3", "./main.py"]

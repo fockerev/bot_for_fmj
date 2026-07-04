@@ -42,6 +42,95 @@ def test_convert_messages_uses_agent_framework_types():
     assert content_dicts[1]["media_type"] == "image/png"
 
 
+def test_convert_messages_adds_x_mcp_search_count_instruction():
+    service = MicrosoftAgentService()
+    agent_settings = settings()
+    agent_settings.mcp_servers = [
+        MCPServerSettings(
+            name="xapi",
+            transport="http",
+            command="",
+            args=[],
+            url="https://api.x.com/mcp",
+            env={},
+            headers={},
+            allowed_tools=[],
+            approval_mode="never_require",
+            request_timeout=300,
+        )
+    ]
+    agent_settings.mcp_search_result_limit = 50
+
+    instructions, converted = service.convert_messages(
+        [
+            ChatMessage(role="system", content=[ChatContentPart(type="text", text="system prompt")]),
+            ChatMessage(role="user", content=[ChatContentPart(type="text", text="search X")]),
+        ],
+        agent_settings,
+    )
+
+    assert converted
+    assert instructions is not None
+    assert "system prompt" in instructions
+    assert "pass at least 10" in instructions
+    assert "Prefer 50 results" in instructions
+
+
+def test_convert_messages_clamps_x_mcp_search_count_instruction_to_api_minimum():
+    service = MicrosoftAgentService()
+    agent_settings = settings()
+    agent_settings.mcp_servers = [
+        MCPServerSettings(
+            name="xapi",
+            transport="http",
+            command="",
+            args=[],
+            url="https://api.x.com/mcp",
+            env={},
+            headers={},
+            allowed_tools=[],
+            approval_mode="never_require",
+            request_timeout=300,
+        )
+    ]
+    agent_settings.mcp_search_result_limit = 3
+
+    instructions, _ = service.convert_messages(
+        [ChatMessage(role="user", content=[ChatContentPart(type="text", text="search X")])],
+        agent_settings,
+    )
+
+    assert instructions is not None
+    assert "pass at least 10" in instructions
+    assert "Prefer 10 results" in instructions
+
+
+def test_convert_messages_does_not_add_mcp_instruction_without_limit():
+    service = MicrosoftAgentService()
+    agent_settings = settings()
+    agent_settings.mcp_servers = [
+        MCPServerSettings(
+            name="filesystem",
+            transport="stdio",
+            command="npx",
+            args=["-y", "server"],
+            url=None,
+            env={},
+            headers={},
+            allowed_tools=[],
+            approval_mode="never_require",
+            request_timeout=300,
+        )
+    ]
+
+    instructions, _ = service.convert_messages(
+        [ChatMessage(role="system", content=[ChatContentPart(type="text", text="system prompt")])],
+        agent_settings,
+    )
+
+    assert instructions == "system prompt"
+
+
 def test_guess_image_media_type():
     service = MicrosoftAgentService()
 
