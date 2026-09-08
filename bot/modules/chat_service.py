@@ -6,6 +6,7 @@ from .agent_service import AgentExecutionError, AgentResult, AgentService, Agent
 from .chat_models import ChatContentPart, ChatMessage, ChatRequest, ChatResponse
 from .config import AppConfig
 from .guild_config import GuildConfigManager
+from .image_history import prepare_image_history
 from .logging_service import safe_preview
 from .session_store import SessionStore, SessionStoreError
 
@@ -39,6 +40,7 @@ class ChatService:
         )
 
         try:
+            await prepare_image_history(session.messages, user_message)
             messages = self.build_agent_messages(session)
             settings = self.build_agent_settings(effective_config)
             result = await self.agent_service.generate(messages, settings)

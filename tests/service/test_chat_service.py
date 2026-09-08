@@ -3,6 +3,8 @@ import logging
 
 from bot.modules.agent_service import AgentResult, FakeAgentService
 from bot.modules.chat_models import ChatRequest
+from bot.modules.chat_models import ChatContentPart, ChatMessage
+from bot.modules import image_history
 from bot.modules.chat_service import ChatService
 from bot.modules.config import AgentConfig, AppConfig, BotConfig, LoggingConfig, MCPConfig, MCPServerConfig
 from bot.modules.guild_config import GuildConfigManager
@@ -31,6 +33,54 @@ async def test_chat_service_saves_user_and_assistant(tmp_path):
     assert response.text == "ok"
     session = store.get_session(1, "system")
     assert [message.role for message in session.messages] == ["user", "assistant"]
+
+
+async def test_image_history_survives_reload_and_url_expiry(tmp_path, monkeypatch):
+    app_config = config()
+    logger = logging.getLogger(__name__)
+    guild_manager = GuildConfigManager(app_config, tmp_path, logger)
+    store = SessionStore(tmp_path / "sessions", app_config.bot.history_size, logger)
+    agent = FakeAgentService("ok")
+    service = ChatService(app_config, guild_manager, store, agent, logger)
+    downloads = []
+
+    async def download(client, url):
+        downloads.append(url)
+        return "data:image/png;base64,aW1hZ2U="
+
+    monkeypatch.setattr(image_history, "download_image", download)
+    url = "https://cdn.discordapp.com/attachments/1/2/a.png?ex=ffffffff"
+    assert (await service.handle_chat(ChatRequest(1, 2, "画像を見て", [url]))).text == "ok"
+    monkeypatch.setattr(image_history, "is_expired", lambda url: True)
+    service.session_store = SessionStore(tmp_path / "sessions", app_config.bot.history_size, logger)
+
+    assert (await service.handle_chat(ChatRequest(1, 2, "昨日の画像について", []))).text == "ok"
+
+    assert downloads == [url]
+    assert agent.requests[-1][0][1].content[1].image_url == "data:image/png;base64,aW1hZ2U="
+    assert len(store.get_session(1, "system").messages) == 4
+
+
+async def test_legacy_expired_image_recovers_without_history_reset(tmp_path):
+    app_config = config()
+    logger = logging.getLogger(__name__)
+    store = SessionStore(tmp_path / "sessions", app_config.bot.history_size, logger)
+    session = store.get_session(1, "system")
+    session.messages = [
+        ChatMessage(role="user", content=[ChatContentPart(type="image_url", image_url="https://cdn.discordapp.com/attachments/1/2/a.png?ex=1")]),
+        ChatMessage(role="assistant", content=[ChatContentPart(type="text", text="以前の回答")]),
+    ]
+    store.save_session(session)
+    agent = FakeAgentService("ok")
+    service = ChatService(app_config, GuildConfigManager(app_config, tmp_path, logger), store, agent, logger)
+
+    assert (await service.handle_chat(ChatRequest(1, 2, "続けて", []))).text == "ok"
+
+    assert agent.requests[0][0][1].content[0].text == image_history.UNAVAILABLE_IMAGE_TEXT
+    saved = store.get_session(1, "system")
+    assert len(saved.messages) == 4
+    assert saved.messages[1].content[0].text == "以前の回答"
+    assert saved.messages[0].content[0].type == "text"
 
 
 class FailingAgent:

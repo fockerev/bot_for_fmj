@@ -140,6 +140,19 @@ def test_guess_image_media_type():
     assert service._guess_image_media_type("https://example.com/a.bin") is None
 
 
+def test_convert_messages_accepts_persisted_image_data():
+    service = MicrosoftAgentService()
+    _, converted = service.convert_messages(
+        [ChatMessage(role="user", content=[ChatContentPart(type="image_url", image_url="data:image/png;base64,aW1hZ2U=")])],
+        settings(),
+    )
+
+    content = converted[0].contents[0]
+    assert content.type == "data"
+    assert content.media_type == "image/png"
+    assert content.uri == "data:image/png;base64,aW1hZ2U="
+
+
 def test_build_x_mcp_stdio_tool(monkeypatch):
     monkeypatch.setenv("X_CLIENT_ID", "client-id")
     monkeypatch.setenv("X_CLIENT_SECRET", "client-secret")
